@@ -37,11 +37,11 @@ solver::solver(dimacs& formula) : formula(formula),
     var_to_watch_clauses.resize(formula.nb_vars + 1);
     watch_vars.resize(formula.nb_clauses);
     for (auto i = 0; i < formula.nb_clauses; i++) {
-        auto x = abs(formula.clauses[i][0]);
-        auto y = abs(formula.clauses[i][1]);
+        auto x = formula.clauses[i][0];
+        auto y = formula.clauses[i][1];
         watch_vars[i] = std::make_pair(x, y);
-        var_to_watch_clauses[x].push_back(i);
-        var_to_watch_clauses[y].push_back(i);
+        var_to_watch_clauses[abs(x)].push_back(i);
+        var_to_watch_clauses[abs(y)].push_back(i);
     }
 
     // build var -> +-clauses map
@@ -162,24 +162,26 @@ void solver::try_propagate(int var) {
             continue;
 
         auto watch_pair = watch_vars[i];
-        auto other = watch_pair.first == var ? watch_pair.second : watch_pair.first;
+        int signed_self;
+        int signed_other;
+        if (abs(watch_pair.first) == var) {
+            std::tie(signed_self, signed_other) = watch_pair;
+        } else {
+            std::tie(signed_other, signed_self) = watch_pair;
+        }
         auto found = false;
-        for (auto signed_var: formula.clauses[i]) {
-            auto abs_var = abs(signed_var);
-            if (abs_var == other || abs_var == var || get_signed_value(signed_var) != UNDEF)
+        for (auto signed_candidate_var: formula.clauses[i]) {
+            if (signed_candidate_var == signed_other ||
+                signed_candidate_var == signed_self ||
+                get_signed_value(signed_candidate_var) != UNDEF)
                 continue;
 
             found = true;
-            replace_watch_var(i, other, var, abs_var);
+            replace_watch_var(i, signed_other, signed_self, signed_candidate_var);
         }
         ever_found |= found;
         if (!found) {
-            for (auto signed_var: formula.clauses[i]) {
-                if (abs(signed_var) == other) {
-                    signed_vars.push_back(signed_var);
-                    break;
-                }
-            }
+            signed_vars.push_back(signed_other);
         }
     }
     if (ever_found) {
@@ -198,15 +200,16 @@ void solver::try_propagate(int var) {
     }
 }
 
-void solver::replace_watch_var(int clause_id, int other_var, int from_var, int to_var) {
-    watch_vars[clause_id] = std::make_pair(other_var, to_var);
+void solver::replace_watch_var(int clause_id, int signed_other_var, int signed_from_var, int signed_to_var) {
+    watch_vars[clause_id] = std::make_pair(signed_other_var, signed_to_var);
 
+    auto from_var = abs(signed_from_var);
     auto position = std::find(var_to_watch_clauses[from_var].begin(), var_to_watch_clauses[from_var].end(), clause_id);
     debug(if (position == var_to_watch_clauses[from_var].end())
         debug_logic_error("from_var: " << from_var << " was not a watch literal for clause_id: " << clause_id))
     *position = -1;
 
-    var_to_watch_clauses[to_var].push_back(clause_id);
+    var_to_watch_clauses[abs(signed_to_var)].push_back(clause_id);
 }
 
 bool solver::set_value(int var, bool value) {
@@ -257,10 +260,6 @@ void solver::disable_clause(int clause) {
         } else
             continue;
 
-        if (get_signed_value(resigned_var) == FALSE) {
-            unsat = true;
-            return;
-        }
         if (set_signed_value(resigned_var))
             pure_vars++;
     }
