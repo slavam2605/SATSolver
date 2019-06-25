@@ -61,6 +61,7 @@ class solver {
     std::vector<std::vector<int>> var_to_watch_clauses;
     std::vector<std::pair<int, int>> watch_vars;
     std::vector<value_state> prior_values;
+    std::vector<double> vsids_score;
     debug_def(std::unordered_set<std::vector<int>> clause_filter;)
 
     // volatile state
@@ -85,6 +86,11 @@ class solver {
     // statistics
     int64_t decisions;
     int64_t propagations;
+    int64_t conflicts;
+
+    // constants
+    int64_t vsids_decay_iteration = 256;
+    double vsids_decay_factor = 0.5;
 public:
     explicit solver(dimacs& formula);
     bool solve();

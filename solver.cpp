@@ -13,7 +13,8 @@ solver::solver(dimacs& formula) : nb_vars(formula.nb_vars),
                                   values_count(0),
                                   log_iteration(0),
                                   decisions(0),
-                                  propagations(0) {
+                                  propagations(0),
+                                  conflicts(0) {
     // init values
     values.resize(nb_vars + 1);
     std::fill(values.begin(), values.end(), UNDEF);
@@ -55,6 +56,14 @@ solver::solver(dimacs& formula) : nb_vars(formula.nb_vars),
         watch_vars[i] = std::make_pair(x, y);
         var_to_watch_clauses[abs(x)].push_back(i);
         var_to_watch_clauses[abs(y)].push_back(i);
+    }
+
+    // init vsids score
+    vsids_score.resize(nb_vars + 1);
+    for (const auto& clause: clauses) {
+        for (auto signed_var: clause) {
+            vsids_score[abs(signed_var)]++;
+        }
     }
 }
 
@@ -120,6 +129,13 @@ bool solver::solve() {
 
 int solver::analyse_conflict() {
     static std::vector<int8_t> var_count;
+
+    conflicts++;
+    if (conflicts % vsids_decay_iteration == 0) {
+        for (auto var = 1; var <= nb_vars; var++) {
+            vsids_score[var] *= vsids_decay_factor;
+        }
+    }
 
     var_count.resize(nb_vars + 1);
     std::fill(var_count.begin(), var_count.end(), 0);
@@ -190,15 +206,27 @@ int solver::analyse_conflict() {
     auto next_level = max == 0 ? 1 : max;
     add_clause(new_clause, next_level);
 
+    for (auto signed_var: new_clause) {
+        vsids_score[abs(signed_var)]++;
+    }
+
     return next_level;
 }
 
 int solver::pick_var() {
+    double max = -1;
+    auto max_var = 0;
     for (auto var = 1; var <= nb_vars; var++) {
-        if (values[var] == UNDEF)
-            return var;
+        if (values[var] == UNDEF && vsids_score[var] > max) {
+            max = vsids_score[var];
+            max_var = var;
+        }
     }
-    debug(debug_logic_error("Can't pick new variable"))
+    debug(if (max_var == 0)
+        debug_logic_error("Can't pick new variable"))
+
+    trace("Pick variable: " << max_var)
+    return max_var;
 }
 
 void solver::take_snapshot(int next_var) {
@@ -482,7 +510,8 @@ bool solver::report_result(bool result) {
 void solver::print_statistics() {
     std::cout << "Decisions made: \t" << decisions << std::endl;
     std::cout << "Variables propagated: \t" << propagations << std::endl;
-    std::cout << "Clause count: " << clauses.size() << std::endl;
+    std::cout << "Conflicts resolved: \t" << conflicts << std::endl;
+    std::cout << "Clause count: \t\t" << clauses.size() << std::endl;
     std::cout << std::endl;
 }
 
