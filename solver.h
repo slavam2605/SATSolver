@@ -2,13 +2,17 @@
 #define SATSOLVER_SOLVER_H
 
 #include "dimacs.h"
+#include "debug.h"
 #include <vector>
 #include <chrono>
+
+#ifdef DEBUG
+#include <unordered_set>
+#endif
 
 struct snapshot {
     int next_var;
     size_t values_stack_length;
-    size_t disabled_clauses_stack_length;
 };
 
 enum sat_result {
@@ -23,30 +27,54 @@ enum value_state {
     UNDEF = 2
 };
 
+debug_def(
+template <class T>
+inline void hash_combine(std::size_t& seed, T const& v)
+{
+    seed ^= std::hash<T>()(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+}
+
+namespace std
+{
+    template<typename T>
+    struct hash<vector<T>>
+    {
+        typedef vector<T> argument_type;
+        typedef std::size_t result_type;
+        result_type operator()(argument_type const& in) const
+        {
+            size_t size = in.size();
+            size_t seed = 0;
+            for (size_t i = 0; i < size; i++)
+                hash_combine(seed, in[i]);
+            return seed;
+        }
+    };
+}
+)
+
 class solver {
-    dimacs& formula;
+    unsigned int nb_vars;
+    std::vector<std::vector<int>> clauses;
 
     // static state
-    std::vector<std::vector<int>> var_to_clauses;
     std::vector<std::vector<int>> var_to_watch_clauses;
     std::vector<std::pair<int, int>> watch_vars;
-    std::vector<std::vector<int>> var_to_positive_clauses;
-    std::vector<std::vector<int>> var_to_negative_clauses;
+    std::vector<value_state> prior_values;
+    debug_def(std::unordered_set<std::vector<int>> clause_filter;)
 
     // volatile state
     bool unsat;
+    int conflict_clause;
 
     // backtrackable state
     std::vector<value_state> values;
     size_t values_count;
-    std::vector<int8_t> disabled_clauses;
-    size_t disabled_clauses_count;
-    std::vector<int> var_positive_count;
-    std::vector<int> var_negative_count;
+    std::vector<int> antecedent_clauses;
+    std::vector<int> var_to_decision_level;
 
     // stack of state changes
     std::vector<int> values_stack;
-    std::vector<int> disabled_clauses_stack;
     std::vector<snapshot> snapshots;
 
     // internal stuff
@@ -57,34 +85,41 @@ class solver {
     // statistics
     int64_t decisions;
     int64_t propagations;
-    int64_t pure_vars;
-    int64_t try_propagates;
-    int64_t total_watch_clauses;
 public:
     explicit solver(dimacs& formula);
     bool solve();
 
 private:
     int pick_var();
-    sat_result current_result();
     void take_snapshot(int next_var);
     std::pair<int, bool> backtrack();
+    int current_decision_level();
+    int analyse_conflict();
+    void clear_state();
 
     void try_propagate(int var);
 
-    bool set_value(int var, bool value);
-    void disable_clause(int clause);
-    void enable_clause(int clause);
-    void disable_clauses_for_var(int var, bool value);
-    bool set_signed_value(int signed_var);
+    bool set_value(int var, bool value, int reason_clause);
+    void unset_value(int var);
+
+    bool add_clause(const std::vector<int>& clause, int next_decision_level);
+
+    void apply_prior_values();
+    bool maybe_clause_disabled(int clause_id);
+    bool set_signed_value(int signed_var, int reason_clause);
     value_state get_signed_value(int signed_var);
     void replace_watch_var(int clause_id, int other_var, int from_var, int to_var);
+    void set_prior_value(int signed_var);
 
     void timer_log();
     void slow_log();
 
-    void report_result(bool result);
+    sat_result current_result();
+    bool report_result(bool result);
+    void print_statistics();
     void print_format_seconds(double duration);
+
+    debug_def(std::string values_state();)
 };
 
 #endif //SATSOLVER_SOLVER_H
