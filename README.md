@@ -10,3 +10,4 @@ SATSolver.exe [dimacs-file]
 * Conflict analysis and deduction of a UIP-clauses
 * Unit propagation (boolean constraint propagation)
 * 2-watch literals lazy data structure
+* VSIDS branching heuristics
