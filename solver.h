@@ -62,7 +62,11 @@ class solver {
     std::vector<std::pair<int, int>> watch_vars;
     std::vector<value_state> prior_values;
     std::vector<double> vsids_score;
+    std::vector<int> learnt_clause_lbd;
     debug_def(std::unordered_set<std::vector<int>> clause_filter;)
+    size_t initial_clauses_count;
+    size_t current_clause_limit;
+    std::chrono::seconds timeout;
 
     // volatile state
     bool unsat;
@@ -89,14 +93,26 @@ class solver {
     int64_t conflicts;
 
     // constants
-    int64_t vsids_decay_iteration = 256;
-    double vsids_decay_factor = 0.5;
+    static constexpr int64_t vsids_decay_iteration = 256;
+    static constexpr double vsids_decay_factor = 0.5;
+    static constexpr double random_pick_var_prob = 0.02;
+    static constexpr double clause_limit_init_factor = 1.0 / 3.0;
+    static constexpr double clause_limit_inc_factor = 1.1;
+    static constexpr double clause_keep_ratio = 0.5;
 public:
-    explicit solver(dimacs& formula);
-    bool solve();
+    explicit solver(
+            dimacs& formula,
+            std::chrono::seconds timeout = std::chrono::seconds::max()
+    );
+    sat_result solve();
 
 private:
+    void init(bool restart);
+
     int pick_var();
+    int pick_var_vsids();
+    int pick_var_random();
+
     void take_snapshot(int next_var);
     std::pair<int, bool> backtrack();
     int current_decision_level();
@@ -117,11 +133,12 @@ private:
     void replace_watch_var(int clause_id, int other_var, int from_var, int to_var);
     void set_prior_value(int signed_var);
 
-    void timer_log();
+    bool timer_log();
     void slow_log();
 
     sat_result current_result();
-    bool report_result(bool result);
+    sat_result report_result(bool result);
+    bool verify_result();
     void print_statistics();
     void print_format_seconds(double duration);
 

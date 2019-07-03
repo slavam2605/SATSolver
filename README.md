@@ -11,3 +11,7 @@ SATSolver.exe [dimacs-file]
 * Unit propagation (boolean constraint propagation)
 * 2-watch literals lazy data structure
 * VSIDS branching heuristics
+* Random branching
+* Search restarts (based on learnt clause count)
+* Literals Blocks Distance (LBD) as a measure of quality for learnt clauses
+* Clause deletion (on restart)

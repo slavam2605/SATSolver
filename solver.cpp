@@ -6,19 +6,12 @@
 #include <cmath>
 #include <cstdlib>
 #include <algorithm>
+#include <random>
+#include <unordered_set>
 
-solver::solver(dimacs& formula) : nb_vars(formula.nb_vars),
-                                  unsat(false),
-                                  conflict_clause(-1),
-                                  values_count(0),
-                                  log_iteration(0),
-                                  decisions(0),
-                                  propagations(0),
-                                  conflicts(0) {
-    // init values
-    values.resize(nb_vars + 1);
-    std::fill(values.begin(), values.end(), UNDEF);
-
+solver::solver(dimacs &formula, std::chrono::seconds timeout)
+        : nb_vars(formula.nb_vars),
+          timeout(timeout) {
     // init prior values
     prior_values.resize(nb_vars + 1);
     std::fill(prior_values.begin(), prior_values.end(), UNDEF);
@@ -32,6 +25,66 @@ solver::solver(dimacs& formula) : nb_vars(formula.nb_vars),
             clauses.push_back(clause);
         }
     }
+    initial_clauses_count = clauses.size();
+
+    init(false);
+}
+
+void solver::init(bool restart) {
+    unsat = false;
+    conflict_clause = -1;
+    values_count = 0;
+    decisions = 0;
+    propagations = 0;
+    conflicts = 0;
+
+    if (restart) {
+        values.clear();
+        antecedent_clauses.clear();
+        var_to_decision_level.clear();
+        debug(clause_filter.clear();)
+        var_to_watch_clauses.clear();
+        watch_vars.clear();
+        values_stack.clear();
+        snapshots.clear();
+
+        std::vector<std::pair<std::vector<int>, int>> learnt_clauses;
+        for (auto i = 0; i < clauses.size() - initial_clauses_count; i++) {
+            learnt_clauses.emplace_back(clauses[i + initial_clauses_count], learnt_clause_lbd[i]);
+        }
+        clauses.resize(initial_clauses_count);
+        learnt_clause_lbd.clear();
+
+        std::sort(learnt_clauses.begin(), learnt_clauses.end(), [](const auto& p1, const auto& p2) {
+            return p1.second < p2.second;
+        });
+        auto rest_count = (int) (learnt_clauses.size() * clause_keep_ratio);
+        // Always keep 'glue' clauses
+        while (rest_count < learnt_clauses.size() && learnt_clauses[rest_count].second <= 2)
+            rest_count++;
+
+        for (auto i = 0; i < rest_count; i++) {
+            clauses.push_back(learnt_clauses[i].first);
+            learnt_clause_lbd.push_back(learnt_clauses[i].second);
+        }
+
+        current_clause_limit = (size_t) (current_clause_limit * clause_limit_inc_factor);
+    } else {
+        current_clause_limit = (size_t) (clauses.size() * clause_limit_init_factor);
+        log_iteration = 0;
+
+        // init vsids score
+        vsids_score.resize(nb_vars + 1);
+        for (const auto& clause: clauses) {
+            for (auto signed_var: clause) {
+                vsids_score[abs(signed_var)]++;
+            }
+        }
+    }
+
+    // init values
+    values.resize(nb_vars + 1);
+    std::fill(values.begin(), values.end(), UNDEF);
 
     // init antecedent clauses
     antecedent_clauses.resize(nb_vars + 1);
@@ -57,14 +110,6 @@ solver::solver(dimacs& formula) : nb_vars(formula.nb_vars),
         var_to_watch_clauses[abs(x)].push_back(i);
         var_to_watch_clauses[abs(y)].push_back(i);
     }
-
-    // init vsids score
-    vsids_score.resize(nb_vars + 1);
-    for (const auto& clause: clauses) {
-        for (auto signed_var: clause) {
-            vsids_score[abs(signed_var)]++;
-        }
-    }
 }
 
 void solver::clear_state() {
@@ -83,7 +128,7 @@ sat_result solver::current_result() {
     return UNKNOWN;
 }
 
-bool solver::solve() {
+sat_result solver::solve() {
     start_time = std::chrono::steady_clock::now();
     log_time = start_time;
 
@@ -92,7 +137,7 @@ bool solver::solve() {
         return report_result(current_result());
     }
 
-    while (values_count < nb_vars) {
+    while (unsat || values_count < nb_vars) {
         int next_var;
         bool value;
         if (unsat) {
@@ -120,11 +165,20 @@ bool solver::solve() {
             debug(debug_logic_error("Decision failed"))
         decisions++;
 
-        timer_log();
+        if (clauses.size() - initial_clauses_count > current_clause_limit) {
+            init(true);
+            apply_prior_values();
+            info("Restart, new clause limit: " << current_clause_limit << ", learnt clause count: " << (clauses.size() - initial_clauses_count))
+            debug(if (unsat)
+                debug_logic_error("UNSAT just after restart: should be detected earlier"))
+        }
+
+        if (!timer_log())
+            return UNKNOWN;
     }
 
     report_result(true);
-    return true;
+    return SAT;
 }
 
 int solver::analyse_conflict() {
@@ -182,7 +236,14 @@ int solver::analyse_conflict() {
         }
         new_clause.erase(std::remove(new_clause.begin(), new_clause.end(), 0), new_clause.end());
     }
-
+    new_clause.erase(
+            std::remove_if(
+                    new_clause.begin(),
+                    new_clause.end(),
+                    [this](int signed_var) { return prior_values[abs(signed_var)] != UNDEF; }
+            ),
+            new_clause.end()
+    );
 
     if (new_clause.size() == 1) {
         info("Prior value deduced: " << new_clause[0])
@@ -214,6 +275,23 @@ int solver::analyse_conflict() {
 }
 
 int solver::pick_var() {
+    static std::default_random_engine rd((uint32_t) time(0));
+    static std::uniform_real_distribution<double> dist(0.0, 1.0);
+
+    auto var = 0;
+    if (dist(rd) < random_pick_var_prob) {
+        trace("Pick var using random")
+        var = pick_var_random();
+    } else {
+        trace("Pick var using VSIDS")
+        var = pick_var_vsids();
+    }
+
+    trace("Pick variable: " << var)
+    return var;
+}
+
+int solver::pick_var_vsids() {
     double max = -1;
     auto max_var = 0;
     for (auto var = 1; var <= nb_vars; var++) {
@@ -225,8 +303,24 @@ int solver::pick_var() {
     debug(if (max_var == 0)
         debug_logic_error("Can't pick new variable"))
 
-    trace("Pick variable: " << max_var)
     return max_var;
+}
+
+int solver::pick_var_random() {
+    static std::default_random_engine rd((uint32_t) time(0));
+
+    std::uniform_int_distribution<size_t> dist(1, nb_vars - values_count);
+    auto index = dist(rd);
+    auto counter = 0;
+    for (auto var = 1; var <= nb_vars; var++) {
+        if (values[var] == UNDEF) {
+            counter++;
+            if (counter == index)
+                return var;
+        }
+    }
+
+    debug(debug_logic_error("Failed to pick a random variable"))
 }
 
 void solver::take_snapshot(int next_var) {
@@ -355,7 +449,7 @@ bool solver::set_value(int var, bool value, int reason_clause) {
 
 void solver::unset_value(int var) {
     debug(if (get_signed_value(var) == UNDEF)
-        debug_logic_error("Trying to unset already indefined var: " << var))
+        debug_logic_error("Trying to unset already undefined var: " << var))
 
     values[var] = UNDEF;
     antecedent_clauses[var] = -1;
@@ -392,7 +486,18 @@ bool solver::add_clause(const std::vector<int>& clause, int next_decision_level)
     )
     trace("New clause: " << trace_print_vector(clause))
 
+    static std::unordered_set<int> levels;
+    levels.clear();
+    for (auto signed_var: clause) {
+        auto level = var_to_decision_level[abs(signed_var)];
+        if (level == 0)
+            continue;
+
+        levels.insert(level);
+    }
+
     clauses.push_back(clause);
+    learnt_clause_lbd.push_back(levels.size());
     auto clause_id = (int) (clauses.size() - 1);
 
     debug(if (clause.size() <= 1)
@@ -434,39 +539,19 @@ void solver::print_format_seconds(double duration) {
             }
         }
     }
-    std::cout << std::setprecision(1);
+    std::cout << std::setprecision(1) << std::fixed;
     std::cout << duration << " " << units << std::endl;
 }
 
 void solver::slow_log() {
-    double result = 0;
-    double multiplier = 1.0;
-    for (auto var = 1; var <= nb_vars; var++) {
-        multiplier /= 2;
-        auto value = get_signed_value(var);
-        if (value == FALSE)
-            result += multiplier;
-
-        if (value == UNDEF)
-            std::cout << "?";
-        if (value == FALSE)
-            std::cout << 0;
-        if (value == TRUE)
-            std::cout << 1;
-    }
-    std::cout << std::endl;
-    std::cout << std::fixed << std::setprecision(10);
-    std::cout << "Status: " << 100 * result << "%" << std::endl;
-
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time);
-    auto rest = round(elapsed.count() * (1.0 - result) / result / 1000);
-    std::cout << "Estimated time left: ";
-    print_format_seconds(rest);
-
+    std::cout << "Elapsed time: ";
+    print_format_seconds(elapsed.count() / 1000.0);
+    std::cout << std::endl;
     print_statistics();
 }
 
-void solver::timer_log() {
+bool solver::timer_log() {
     constexpr int iterations = 20000;
     constexpr int64_t interval = 5000;
 
@@ -479,11 +564,35 @@ void solver::timer_log() {
         if (duration.count() >= interval) {
             log_time = now;
             slow_log();
+
+            auto duration_from_start = std::chrono::duration_cast<std::chrono::seconds>(now - start_time);
+            if (duration_from_start > timeout)
+                return false;
         }
     }
+    return true;
 }
 
-bool solver::report_result(bool result) {
+bool solver::verify_result() {
+    auto result = true;
+    for (auto clause_id = 0; clause_id < initial_clauses_count; clause_id++) {
+        const auto& clause = clauses[clause_id];
+        auto all_false = true;
+        for (auto signed_var: clause) {
+            if (get_signed_value(signed_var) != FALSE) {
+                all_false = false;
+                break;
+            }
+        }
+        if (all_false) {
+            info(trace_print_vector(clause) << " => false")
+            result = false;
+        }
+    }
+    return result;
+}
+
+sat_result solver::report_result(bool result) {
     if (result) {
         std::cout << "SAT" << std::endl;
         for (auto i = 1; i <= nb_vars; i++) {
@@ -496,6 +605,8 @@ bool solver::report_result(bool result) {
                 std::cout << "? ";
         }
         std::cout << std::endl;
+        debug(if (!verify_result())
+            debug_logic_error("Found solution is not a solution"))
     } else {
         std::cout << "UNSAT" << std::endl;
     }
@@ -504,14 +615,16 @@ bool solver::report_result(bool result) {
     print_format_seconds(elapsed.count() / 1000.0);
     print_statistics();
 
-    return result;
+    return result ? SAT : UNSAT;
 }
 
 void solver::print_statistics() {
     std::cout << "Decisions made: \t" << decisions << std::endl;
     std::cout << "Variables propagated: \t" << propagations << std::endl;
     std::cout << "Conflicts resolved: \t" << conflicts << std::endl;
-    std::cout << "Clause count: \t\t" << clauses.size() << std::endl;
+    std::cout << "Clause count: \t\t" << clauses.size()
+              << " (learned clauses: " << (clauses.size() - initial_clauses_count)
+              << " with limit " << current_clause_limit << ")" << std::endl;
     std::cout << std::endl;
 }
 

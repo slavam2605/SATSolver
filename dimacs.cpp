@@ -3,7 +3,7 @@
 #include <sstream>
 #include <algorithm>
 
-dimacs dimacs::read(const char* path) {
+dimacs dimacs::read(const std::string& path) {
     dimacs result;
     std::ifstream fin(path);
     std::string line;
