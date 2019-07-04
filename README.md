@@ -15,4 +15,4 @@ SATSolver.exe [dimacs-file]
 * Search restarts (based on learnt clause count)
 * Literals Blocks Distance (LBD) as a measure of quality for learnt clauses
 * Clause deletion (on restart)
-* SAT formula basic preprocessing (eliminate variables with BCP)
+* SAT formula basic preprocessing (eliminate variables with BCP and pure variable elimination)

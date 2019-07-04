@@ -16,7 +16,12 @@ public:
     std::pair<dimacs, sat_remapper> preprocess();
 
 private:
-    void propagate_all();
+    bool propagate_all();
+    bool eliminate_pure();
+
+    bool remove_true_clauses();
+    bool remove_false_literals(std::vector<int>& clause);
+    std::vector<int>::const_iterator find_true_literal(const std::vector<int>& clause);
     void set_signed_prior_value(int signed_var);
     value_state get_signed_prior_value(int signed_var);
 };
