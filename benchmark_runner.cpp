@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include "dimacs.h"
 #include "solver.h"
+#include "solver_runner.h"
 
 bool ends_with(const std::string& string, const std::string& ending) {
     if (string.length() < ending.length())
@@ -35,9 +36,8 @@ int main(int argc, char* argv[]) {
                 size_t elapsed_time;
                 sat_result result;
                 measure_time(elapsed_time,
-                    auto file = dimacs::read(folder_name + ("/" + filename));
-                    solver solver(file);
-                    result = solver.solve();
+                    solver_runner runner(folder_name + ("/" + filename));
+                    result = runner.solve();
                 )
                 std::cout << (result == SAT ? "SAT" : (result == UNSAT ? "UNSAT" : "TIMEOUT")) << ", time: " << elapsed_time / 1000 << " seconds" << std::endl;
             }

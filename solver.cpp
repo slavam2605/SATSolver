@@ -9,8 +9,9 @@
 #include <random>
 #include <unordered_set>
 
-solver::solver(dimacs &formula, std::chrono::seconds timeout)
+solver::solver(const dimacs &formula, std::chrono::seconds timeout)
         : nb_vars(formula.nb_vars),
+          priors(0),
           timeout(timeout) {
     // init prior values
     prior_values.resize(nb_vars + 1);
@@ -19,8 +20,7 @@ solver::solver(dimacs &formula, std::chrono::seconds timeout)
     // init clauses
     for (const auto& clause: formula.clauses) {
         if (clause.size() == 1) {
-            prior_values[abs(clause[0])] = clause[0] > 0 ? TRUE : FALSE;
-            info("Prior value defined in dimacs: " << clause[0])
+            set_prior_value(clause[0]);
         } else {
             clauses.push_back(clause);
         }
@@ -128,7 +128,7 @@ sat_result solver::current_result() {
     return UNKNOWN;
 }
 
-sat_result solver::solve() {
+std::pair<sat_result, std::vector<int8_t>> solver::solve() {
     start_time = std::chrono::steady_clock::now();
     log_time = start_time;
 
@@ -174,11 +174,10 @@ sat_result solver::solve() {
         }
 
         if (!timer_log())
-            return UNKNOWN;
+            return std::make_pair(UNKNOWN, std::vector<int8_t>());
     }
 
-    report_result(true);
-    return SAT;
+    return report_result(true);
 }
 
 int solver::analyse_conflict() {
@@ -246,7 +245,6 @@ int solver::analyse_conflict() {
     );
 
     if (new_clause.size() == 1) {
-        info("Prior value deduced: " << new_clause[0])
         set_prior_value(new_clause[0]);
         return 1;
     }
@@ -458,6 +456,7 @@ void solver::unset_value(int var) {
 
 void solver::set_prior_value(int signed_var) {
     prior_values[abs(signed_var)] = signed_var > 0 ? TRUE : FALSE;
+    priors++;
 }
 
 bool solver::set_signed_value(int signed_var, int reason_clause) {
@@ -547,7 +546,6 @@ void solver::slow_log() {
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time);
     std::cout << "Elapsed time: ";
     print_format_seconds(elapsed.count() / 1000.0);
-    std::cout << std::endl;
     print_statistics();
 }
 
@@ -592,7 +590,7 @@ bool solver::verify_result() {
     return result;
 }
 
-sat_result solver::report_result(bool result) {
+std::pair<sat_result, std::vector<int8_t>> solver::report_result(bool result) {
     if (result) {
         std::cout << "SAT" << std::endl;
         for (auto i = 1; i <= nb_vars; i++) {
@@ -615,13 +613,24 @@ sat_result solver::report_result(bool result) {
     print_format_seconds(elapsed.count() / 1000.0);
     print_statistics();
 
-    return result ? SAT : UNSAT;
+    if (result) {
+        std::vector<int8_t> result_values;
+        result_values.push_back(0);
+        for (auto var = 1; var <= nb_vars; var++) {
+            result_values.push_back(values[var]);
+        }
+        return std::make_pair(SAT, result_values);
+    } else {
+        return std::make_pair(UNSAT, std::vector<int8_t>());
+    }
 }
 
 void solver::print_statistics() {
     std::cout << "Decisions made: \t" << decisions << std::endl;
     std::cout << "Variables propagated: \t" << propagations << std::endl;
     std::cout << "Conflicts resolved: \t" << conflicts << std::endl;
+    std::cout << "Deduced values: \t" << priors
+              << " (of total " << nb_vars << ")" << std::endl;
     std::cout << "Clause count: \t\t" << clauses.size()
               << " (learned clauses: " << (clauses.size() - initial_clauses_count)
               << " with limit " << current_clause_limit << ")" << std::endl;

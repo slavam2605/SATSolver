@@ -1,6 +1,8 @@
 #include <iostream>
 #include "dimacs.h"
 #include "solver.h"
+#include "sat_preprocessor.h"
+#include "solver_runner.h"
 #include <chrono>
 #include <iomanip>
 
@@ -23,8 +25,8 @@ int main(int argc, char* argv[]) {
         return WRONG_USAGE_RETURN_CODE;
     }
 
-    auto file = dimacs::read(argv[1]);
-    solver solver(file);
-    auto result = solver.solve();
+    solver_runner runner(argv[1]);
+    auto result = runner.solve();
+
     return result ? SAT_RETURN_CODE : UNSAT_RETURN_CODE;
 }

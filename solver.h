@@ -91,6 +91,7 @@ class solver {
     int64_t decisions;
     int64_t propagations;
     int64_t conflicts;
+    int64_t priors;
 
     // constants
     static constexpr int64_t vsids_decay_iteration = 256;
@@ -101,10 +102,10 @@ class solver {
     static constexpr double clause_keep_ratio = 0.5;
 public:
     explicit solver(
-            dimacs& formula,
+            const dimacs& formula,
             std::chrono::seconds timeout = std::chrono::seconds::max()
     );
-    sat_result solve();
+    std::pair<sat_result, std::vector<int8_t>> solve();
 
 private:
     void init(bool restart);
@@ -137,7 +138,7 @@ private:
     void slow_log();
 
     sat_result current_result();
-    sat_result report_result(bool result);
+    std::pair<sat_result, std::vector<int8_t>> report_result(bool result);
     bool verify_result();
     void print_statistics();
     void print_format_seconds(double duration);
