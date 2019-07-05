@@ -76,6 +76,7 @@ class solver {
     std::vector<value_state> values;
     size_t values_count;
     std::vector<int> antecedent_clauses;
+    std::vector<int> var_implied_depth;
     std::vector<int> var_to_decision_level;
 
     // stack of state changes

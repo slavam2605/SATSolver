@@ -7,7 +7,7 @@ SATSolver.exe [dimacs-file]
 
 ## Implemented features
 * Non-chronological backtrace
-* Conflict analysis and deduction of a UIP-clauses
+* Conflict analysis and deduction of a 1-UIP-clauses
 * Unit propagation (boolean constraint propagation)
 * 2-watch literals lazy data structure
 * VSIDS branching heuristics

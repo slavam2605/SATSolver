@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <random>
 #include <unordered_set>
+#include <queue>
 
 solver::solver(const dimacs &formula, std::chrono::seconds timeout)
         : nb_vars(formula.nb_vars),
@@ -41,6 +42,7 @@ void solver::init(bool restart) {
     if (restart) {
         values.clear();
         antecedent_clauses.clear();
+        var_implied_depth.clear();
         var_to_decision_level.clear();
         debug(clause_filter.clear();)
         var_to_watch_clauses.clear();
@@ -89,6 +91,10 @@ void solver::init(bool restart) {
     // init antecedent clauses
     antecedent_clauses.resize(nb_vars + 1);
     std::fill(antecedent_clauses.begin(), antecedent_clauses.end(), -1);
+
+    // init implied depth of variables
+    var_implied_depth.resize(nb_vars + 1);
+    std::fill(var_implied_depth.begin(), var_implied_depth.end(), 0);
 
     // init var to decision level
     var_to_decision_level.resize(nb_vars + 1);
@@ -201,39 +207,52 @@ int solver::analyse_conflict() {
         var_count[abs(signed_var)]++;
     }
 
+    auto compare = [this](int left_signed_var, int right_signed_var) {
+        auto left_var = abs(left_signed_var);
+        auto right_var = abs(right_signed_var);
+        return var_implied_depth[left_var] < var_implied_depth[right_var];
+    };
+    std::priority_queue<int, std::vector<int>, decltype(compare)> new_clause_queue(compare);
+    for (int signed_var: new_clause) {
+        new_clause_queue.push(signed_var);
+    }
+    new_clause.clear();
 
-    // TODO: not a 1-UIP algorithm
-    // Example: conflict graph (a@4 -> b@4, a@4 -> c@4, (b@4, c@4) -> d@4, d@4 -> e@4
-    // Clause at some moment of time: [d@4, e@4]
-    // Must expand e@4 earlier than d@4, but actually: [b@4, c@4, e@4] -> ... -> [a@4] -- not a 1-UIP
     if (level_count > 1) {
-        for (auto i = 0; i < new_clause.size(); i++) {
-            auto var = abs(new_clause[i]);
+        while (!new_clause_queue.empty()) {
+            auto signed_var = new_clause_queue.top();
+            auto var = abs(signed_var);
+            new_clause_queue.pop();
             auto level = var_to_decision_level[var];
-            if (level != current_decision_level())
+            if (level != current_decision_level()) {
+                new_clause.push_back(signed_var);
                 continue;
+            }
 
             auto clause_id = antecedent_clauses[var];
-            if (clause_id == -1)
-                continue;
+            debug(if (clause_id == -1)
+                debug_logic_error("1-UIP algorithm reached decision variable from current level"))
 
-            new_clause[i] = 0;
             level_count--;
             for (auto other_signed_var: clauses[clause_id]) {
                 if (abs(other_signed_var) == var || var_count[abs(other_signed_var)] > 0)
                     continue;
 
                 auto other_level = var_to_decision_level[abs(other_signed_var)];
-                new_clause.push_back(other_signed_var);
+                new_clause_queue.push(other_signed_var);
                 if (other_level == current_decision_level())
                     level_count++;
                 var_count[abs(other_signed_var)]++;
             }
+
             // Stop at first UIP
             if (level_count == 1)
                 break;
         }
-        new_clause.erase(std::remove(new_clause.begin(), new_clause.end(), 0), new_clause.end());
+        while (!new_clause_queue.empty()) {
+            new_clause.push_back(new_clause_queue.top());
+            new_clause_queue.pop();
+        }
     }
     new_clause.erase(
             std::remove_if(
@@ -436,6 +455,16 @@ bool solver::set_value(int var, bool value, int reason_clause) {
         values_count++;
         values_stack.push_back(var);
         antecedent_clauses[var] = reason_clause;
+        auto implied_depth = 0;
+        if (reason_clause != -1) {
+            for (int signed_var: clauses[reason_clause]) {
+                if (var_to_decision_level[abs(signed_var)] != current_decision_level())
+                    continue;
+
+                implied_depth = std::max(implied_depth, var_implied_depth[abs(signed_var)] + 1);
+            }
+        }
+        var_implied_depth[var] = implied_depth;
         var_to_decision_level[var] = current_decision_level();
         try_propagate(var);
         return true;
@@ -451,6 +480,7 @@ void solver::unset_value(int var) {
 
     values[var] = UNDEF;
     antecedent_clauses[var] = -1;
+    var_implied_depth[var] = 0;
     values_count--;
 }
 

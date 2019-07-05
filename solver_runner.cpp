@@ -1,3 +1,4 @@
+#include <stdexcept>
 #include "solver_runner.h"
 
 solver_runner::solver_runner(const std::string &filename)
