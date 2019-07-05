@@ -16,3 +16,4 @@ SATSolver.exe [dimacs-file]
 * Literals Blocks Distance (LBD) as a measure of quality for learnt clauses
 * Clause deletion (on restart)
 * SAT formula basic preprocessing (eliminate variables with BCP and pure variable elimination)
+* Decision variable value: true, false or random (polarity mode)

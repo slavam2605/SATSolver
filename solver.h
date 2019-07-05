@@ -27,6 +27,10 @@ enum value_state {
     UNDEF = 2
 };
 
+enum class polarity_mode {
+    TRUE, FALSE, RANDOM
+};
+
 debug_def(
 template <class T>
 inline void hash_combine(std::size_t& seed, T const& v)
@@ -101,6 +105,7 @@ class solver {
     static constexpr double clause_limit_init_factor = 1.0 / 3.0;
     static constexpr double clause_limit_inc_factor = 1.1;
     static constexpr double clause_keep_ratio = 0.5;
+    static constexpr polarity_mode pick_polarity_mode = polarity_mode::FALSE;
 public:
     explicit solver(
             const dimacs& formula,
@@ -115,6 +120,7 @@ private:
     int pick_var_vsids();
     int pick_var_random();
 
+    bool pick_polarity();
     void take_snapshot(int next_var);
     std::pair<int, bool> backtrack();
     int current_decision_level();

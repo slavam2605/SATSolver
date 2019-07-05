@@ -164,7 +164,7 @@ std::pair<sat_result, std::vector<int8_t>> solver::solve() {
         }
 
         next_var = pick_var();
-        value = true;
+        value = pick_polarity();
         take_snapshot(next_var);
 
         if (!set_value(next_var, value, -1))
@@ -289,6 +289,20 @@ int solver::analyse_conflict() {
     }
 
     return next_level;
+}
+
+bool solver::pick_polarity() {
+    std::default_random_engine rd((uint32_t) time(0));
+    std::uniform_int_distribution<int> coin(0, 1);
+
+    switch (pick_polarity_mode) {
+        case polarity_mode::TRUE:
+            return true;
+        case polarity_mode::FALSE:
+            return false;
+        case polarity_mode::RANDOM:
+            return coin(rd) == 1;
+    }
 }
 
 int solver::pick_var() {
