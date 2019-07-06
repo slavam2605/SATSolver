@@ -17,3 +17,4 @@ SATSolver.exe [dimacs-file]
 * Clause deletion (on restart)
 * SAT formula basic preprocessing (eliminate variables with BCP and pure variable elimination)
 * Decision variable value: true, false or random (polarity mode)
+* Bounded variable elimination (BVE, NiVER algorithm)
