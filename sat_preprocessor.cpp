@@ -25,8 +25,6 @@ std::pair<dimacs, sat_remapper> sat_preprocessor::preprocess() {
 
     info("nb_vars = " << nb_vars << ", nb_clauses = " << clauses.size());
     auto changed = true;
-    // TODO: maybe add edges from implication graph to the formula
-    // TODO: maybe filter out defined variables from implication graph to improve performance
     while (changed && !is_interrupted()) {
         changed = false;
         changed |= propagate_all();
@@ -34,6 +32,7 @@ std::pair<dimacs, sat_remapper> sat_preprocessor::preprocess() {
         changed |= hyper_binary_resolution();
         changed |= eliminate_equality();
 
+        filter_implication_graph();
         debug(
             std::unordered_set<int> vars;
             for (const auto& clause: clauses) {
@@ -96,6 +95,24 @@ std::pair<dimacs, sat_remapper> sat_preprocessor::preprocess() {
     info("Preprocessor: Elapsed time: " << std::fixed << std::setprecision(1)
          << std::chrono::duration_cast<std::chrono::milliseconds>(duration).count() / 1000.0 << " seconds")
     return std::make_pair(new_formula, remapper);
+}
+
+void sat_preprocessor::filter_implication_graph() {
+    for (auto var = 1; var <= nb_vars; var++) {
+        if (prior_values[var] != preprocessor_value_state::UNDEF) {
+            implication_graph[var].clear();
+            implication_graph[-var].clear();
+        }
+    }
+    for (auto& [_, set]: implication_graph) {
+        for (auto iter = set.begin(), last = set.end(); iter != last;) {
+            if (prior_values[abs(*iter)] != preprocessor_value_state::UNDEF) {
+                iter = set.erase(iter);
+            } else {
+                ++iter;
+            }
+        }
+    }
 }
 
 void sat_preprocessor::add_implication_edge(int from, int to) {

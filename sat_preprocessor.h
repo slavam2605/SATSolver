@@ -35,6 +35,7 @@ private:
     bool hyper_binary_resolution();
     bool eliminate_equality();
 
+    void filter_implication_graph();
     bool is_interrupted();
     bool is_interrupted_hyp_bin_res(std::chrono::steady_clock::time_point start);
     bool check_unsat();
