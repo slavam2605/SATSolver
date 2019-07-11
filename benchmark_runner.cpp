@@ -1,5 +1,6 @@
 #include <string>
 #include <iostream>
+#include <fstream>
 #include <dirent.h>
 #include "dimacs.h"
 #include "solver.h"
@@ -20,26 +21,31 @@ bool ends_with(const std::string& string, const std::string& ending) {
 }
 
 int main(int argc, char* argv[]) {
-    if (argc < 2) {
-        std::cout << "Usage: SATSolverBenchmark [folder with .cnf files]" << std::endl;
+    if (argc < 3) {
+        std::cout << "Usage: SATSolverBenchmark [folder with .cnf files] [log-file]" << std::endl;
         return 1;
     }
 
     auto folder_name = argv[1];
+    auto log_file = argv[2];
+    std::ofstream fout(log_file);
     DIR* dir;
     dirent* ent;
     if ((dir = opendir(folder_name)) != nullptr) {
         while ((ent = readdir(dir)) != nullptr) {
             std::string filename(ent->d_name, ent->d_namlen);
             if (ends_with(filename, ".cnf")) {
-                std::cout << filename << "... \t";
+                fout << filename << "... \t";
                 size_t elapsed_time;
                 sat_result result;
                 measure_time(elapsed_time,
                     solver_runner runner(folder_name + ("/" + filename));
-                    result = runner.solve();
+                    result = runner.solve(
+                        /*preprocess = */true,
+                        /*timeout = */std::chrono::seconds {1000}
+                    );
                 )
-                std::cout << (result == SAT ? "SAT" : (result == UNSAT ? "UNSAT" : "TIMEOUT")) << ", time: " << elapsed_time / 1000 << " seconds" << std::endl;
+                fout << (result == SAT ? "SAT" : (result == UNSAT ? "UNSAT" : "TIMEOUT")) << ", time: " << elapsed_time / 1000 << " seconds" << std::endl;
             }
         }
         closedir(dir);

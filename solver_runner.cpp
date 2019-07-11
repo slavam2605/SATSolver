@@ -1,4 +1,5 @@
 #include <stdexcept>
+#include <chrono>
 #include "solver_runner.h"
 
 solver_runner::solver_runner(const std::string &filename)
@@ -6,12 +7,12 @@ solver_runner::solver_runner(const std::string &filename)
           preprocesor(original_formula),
           solved(false) {}
 
-sat_result solver_runner::solve(bool preprocess) {
+sat_result solver_runner::solve(bool preprocess, std::chrono::seconds timeout) {
     if (solved)
         return result;
 
     if (!preprocess) {
-        solver solver(original_formula);
+        solver solver(original_formula, timeout);
         auto [solve_result, values] = solver.solve();
         if (solve_result == SAT) {
             answer.insert(answer.begin(), values.begin(), values.end());
@@ -19,13 +20,17 @@ sat_result solver_runner::solve(bool preprocess) {
         result = solve_result;
     } else {
         auto [formula, remapper] = preprocesor.preprocess();
-        solver solver(formula);
-        auto [solve_result, values] = solver.solve();
-        if (solve_result == SAT) {
-            auto remapped_values = remapper.remap(values);
-            answer.insert(answer.begin(), remapped_values.begin(), remapped_values.end());
+        if (formula.clauses.size() == 1 && formula.clauses[0].empty()) {
+            result = UNSAT;
+        } else {
+            solver solver(formula, timeout);
+            auto[solve_result, values] = solver.solve();
+            if (solve_result == SAT) {
+                auto remapped_values = remapper.remap(values);
+                answer.insert(answer.begin(), remapped_values.begin(), remapped_values.end());
+            }
+            result = solve_result;
         }
-        result = solve_result;
     }
 
     debug(if (result == SAT && !verify_result(original_formula, answer))

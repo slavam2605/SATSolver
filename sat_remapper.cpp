@@ -20,12 +20,17 @@ void sat_remapper::add_undef_var(int var) {
 
 void sat_remapper::add_ver_var(int var, const std::vector<std::vector<int>>& clauses) {
     prior_map[var] = preprocessor_value_state::VER;
-    ver_clauses.emplace_back(var, clauses);
+    remap_events.emplace_back(var, remap_event::create_ver(clauses));
 }
 
 void sat_remapper::add_any_var(int var) {
     // TODO: Support ANY (replace TRUE with ANY here)
     prior_map[var] = preprocessor_value_state::TRUE;
+}
+
+void sat_remapper::add_eq_var(int var, int eq_var) {
+    prior_map[var] = preprocessor_value_state::EQ;
+    remap_events.emplace_back(var, remap_event::create_eq(eq_var));
 }
 
 std::vector<int8_t> sat_remapper::remap(std::vector<int8_t> values) {
@@ -50,45 +55,61 @@ std::vector<int8_t> sat_remapper::remap(std::vector<int8_t> values) {
             case preprocessor_value_state::VER:
                 result.push_back(preprocessor_value_state::VER);
                 break;
+            case preprocessor_value_state::EQ:
+                result.push_back(preprocessor_value_state::EQ);
+                break;
         }
     }
-    for (auto riter = ver_clauses.rbegin(); riter != ver_clauses.rend(); ++riter) {
-        const auto& [var, old_clauses] = *riter;
-        for (const auto& clause: old_clauses) {
-            auto unsat = true;
-            auto var_positive = true;
-            for (int signed_var: clause) {
-                if (signed_var == var) {
-                    var_positive = true;
-                    continue;
-                }
-                if (signed_var == -var) {
-                    var_positive = false;
-                    continue;
-                }
-                auto value = result[abs(signed_var)];
-                switch (value) {
-                    case preprocessor_value_state::TRUE:
-                    case preprocessor_value_state::FALSE:
-                        break;
-                    default:
-                        debug(debug_logic_error("Expected TRUE or FALSE, found: " << (int) result[var]))
-                }
-                if ((value == preprocessor_value_state::TRUE && signed_var > 0) ||
-                    (value == preprocessor_value_state::FALSE && signed_var < 0)) {
-                    unsat = false;
+    for (auto riter = remap_events.rbegin(); riter != remap_events.rend(); ++riter) {
+        const auto& [var, event] = *riter;
+        switch (event.type) {
+            case remap_event_type::VER: {
+                for (const auto& clause: event.ver_clauses) {
+                    auto unsat = true;
+                    auto var_positive = true;
+                    for (int signed_var: clause) {
+                        if (signed_var == var) {
+                            var_positive = true;
+                            continue;
+                        }
+                        if (signed_var == -var) {
+                            var_positive = false;
+                            continue;
+                        }
+                        auto value = result[abs(signed_var)];
+                        switch (value) {
+                            case preprocessor_value_state::TRUE:
+                            case preprocessor_value_state::FALSE:
+                                break;
+                            default:
+                            debug(debug_logic_error("Expected TRUE or FALSE, found: " << (int) result[var]))
+                        }
+                        if ((value == preprocessor_value_state::TRUE && signed_var > 0) ||
+                            (value == preprocessor_value_state::FALSE && signed_var < 0)) {
+                            unsat = false;
+                            break;
+                        }
+                    }
+                    if (!unsat)
+                        continue;
+
+                    result[var] = var_positive ? preprocessor_value_state::TRUE : preprocessor_value_state::FALSE;
                     break;
                 }
+                if (result[var] == preprocessor_value_state::VER) {
+                    // TODO: Support ANY (replace TRUE with ANY here)
+                    result[var] = preprocessor_value_state::TRUE;
+                }
+                break;
             }
-            if (!unsat)
-                continue;
+            case remap_event_type::EQ: {
+                debug(if (result[abs(event.eq_var)] != preprocessor_value_state::TRUE && result[abs(event.eq_var)] != preprocessor_value_state::FALSE)
+                    debug_logic_error("eq_var is not TRUE or FALSE, value: " << (int) result[abs(event.eq_var)]))
 
-            result[var] = var_positive ? preprocessor_value_state::TRUE : preprocessor_value_state::FALSE;
-            break;
-        }
-        if (result[var] == preprocessor_value_state::VER) {
-            // TODO: Support ANY (replace TRUE with ANY here)
-            result[var] = preprocessor_value_state::TRUE;
+                auto value = (result[abs(event.eq_var)] == preprocessor_value_state::TRUE) ^ (event.eq_var < 0);
+                result[var] = value ? preprocessor_value_state::TRUE : preprocessor_value_state::FALSE;
+                break;
+            }
         }
     }
     std::vector<int8_t> bool_result;

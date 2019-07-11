@@ -1,9 +1,11 @@
 #include "dimacs.h"
+#include "debug.h"
 #include <fstream>
 #include <sstream>
 #include <algorithm>
 
 dimacs dimacs::read(const std::string& path) {
+    info("Reading dimacs...")
     dimacs result;
     std::ifstream fin(path);
     std::string line;

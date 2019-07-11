@@ -109,7 +109,7 @@ class solver {
 public:
     explicit solver(
             const dimacs& formula,
-            std::chrono::seconds timeout = std::chrono::seconds::max()
+            std::chrono::seconds timeout
     );
     std::pair<sat_result, std::vector<int8_t>> solve();
 
