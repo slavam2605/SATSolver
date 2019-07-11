@@ -13,6 +13,9 @@
 solver::solver(const dimacs &formula, std::chrono::seconds timeout)
         : nb_vars(formula.nb_vars),
           priors(0),
+          decisions(0),
+          propagations(0),
+          conflicts(0),
           timeout(timeout) {
     // init prior values
     prior_values.resize(nb_vars + 1);
@@ -35,9 +38,6 @@ void solver::init(bool restart) {
     unsat = false;
     conflict_clause = -1;
     values_count = 0;
-    decisions = 0;
-    propagations = 0;
-    conflicts = 0;
 
     if (restart) {
         values.clear();

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <iomanip>
 #include "sat_preprocessor.h"
+#include "sat_utils.h"
 #include "debug.h"
 
 sat_preprocessor::sat_preprocessor(const dimacs &formula) :
@@ -25,6 +26,7 @@ std::pair<dimacs, sat_remapper> sat_preprocessor::preprocess() {
 
     info("nb_vars = " << nb_vars << ", nb_clauses = " << clauses.size());
     auto changed = true;
+    // TODO inprocessing
     while (changed && !is_interrupted()) {
         changed = false;
         changed |= propagate_all();
@@ -261,12 +263,12 @@ bool sat_preprocessor::eliminate_equality() {
                 std::unique(clause.begin(), clause.end()),
                 clause.end()
         );
-        if (is_tautology(clause)) {
-            invalidate_clause(clause);
+        if (sat_utils::is_tautology(clause)) {
+            sat_utils::invalidate_clause(clause);
         }
     }
     clauses.erase(
-            std::remove_if(clauses.begin(), clauses.end(), is_invalidated),
+            std::remove_if(clauses.begin(), clauses.end(), sat_utils::is_invalidated),
             clauses.end()
     );
 
@@ -294,28 +296,6 @@ std::vector<int> sat_preprocessor::resolve(int var, const std::vector<int>& clau
     result.erase(remove_unique, result.end());
     return result;
 }
-
-bool sat_preprocessor::is_tautology(const std::vector<int>& clause) {
-    static std::unordered_set<int> used_vars;
-
-    used_vars.clear();
-    for (int signed_var: clause) {
-        auto var = abs(signed_var);
-        if (used_vars.find(var) != used_vars.end())
-            return true;
-
-        used_vars.insert(var);
-    }
-    return false;
-}
-
-void sat_preprocessor::invalidate_clause(std::vector<int>& clause) {
-    clause = std::vector<int> {0};
-};
-
-bool sat_preprocessor::is_invalidated(const std::vector<int>& clause) {
-    return clause.size() == 1 && clause[0] == 0;
-};
 
 bool sat_preprocessor::niver() {
     if (is_interrupted())
@@ -354,11 +334,11 @@ bool sat_preprocessor::niver() {
 
         debug(
             for (int pclause_id: pvar_clauses[var]) {
-                if (is_invalidated(clauses[pclause_id]))
+                if (sat_utils::is_invalidated(clauses[pclause_id]))
                     debug_logic_error("Deleted clause encountered")
             }
             for (int nclause_id: nvar_clauses[var]) {
-                if (is_invalidated(clauses[nclause_id]))
+                if (sat_utils::is_invalidated(clauses[nclause_id]))
                     debug_logic_error("Deleted clause encountered")
             }
         )
@@ -375,7 +355,7 @@ bool sat_preprocessor::niver() {
         for (int pclause_id: pvar_clauses[var]) {
             for (int nclause_id: nvar_clauses[var]) {
                 auto new_clause = resolve(var, clauses[pclause_id], clauses[nclause_id]);
-                if (!is_tautology(new_clause)) {
+                if (!sat_utils::is_tautology(new_clause)) {
                     new_clauses.push_back(new_clause);
                     new_size += new_clause.size();
                     if (new_size > old_size)
@@ -406,13 +386,13 @@ bool sat_preprocessor::niver() {
                 for (int signed_var: clauses[pclause_id]) {
                     invalidated[abs(signed_var)] = true;
                 }
-                invalidate_clause(clauses[pclause_id]);
+                sat_utils::invalidate_clause(clauses[pclause_id]);
             }
             for (int nclause_id: nvar_clauses[var]) {
                 for (int signed_var: clauses[nclause_id]) {
                     invalidated[abs(signed_var)] = true;
                 }
-                invalidate_clause(clauses[nclause_id]);
+                sat_utils::invalidate_clause(clauses[nclause_id]);
             }
             clauses.insert(clauses.end(), new_clauses.begin(), new_clauses.end());
             changed = true;
@@ -420,7 +400,7 @@ bool sat_preprocessor::niver() {
         }
     }
     clauses.erase(
-            std::remove_if(clauses.begin(), clauses.end(), is_invalidated),
+            std::remove_if(clauses.begin(), clauses.end(), sat_utils::is_invalidated),
             clauses.end()
     );
     return changed;
@@ -443,7 +423,7 @@ bool sat_preprocessor::propagate_all() {
                 propagated++;
             }
         }
-        for (auto [literal, set]: implication_graph) {
+        for (const auto& [literal, set]: implication_graph) {
             if (get_signed_prior_value(literal) != preprocessor_value_state::TRUE)
                 continue;
 

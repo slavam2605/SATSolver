@@ -40,7 +40,6 @@ private:
     bool is_interrupted_hyp_bin_res(std::chrono::steady_clock::time_point start);
     bool check_unsat();
     debug_def(void print_clause_statistics();)
-    bool is_tautology(const std::vector<int>& clause);
     void add_implication_edge(int from, int to);
     bool has_implication_edge(int from, int to);
     std::vector<int> resolve(int var, const std::vector<int>& clause1, const std::vector<int>& clause2);
@@ -49,9 +48,6 @@ private:
     std::vector<int>::const_iterator find_true_literal(const std::vector<int>& clause);
     void set_signed_prior_value(int signed_var);
     preprocessor_value_state get_signed_prior_value(int signed_var);
-
-    static void invalidate_clause(std::vector<int>& clause);
-    static bool is_invalidated(const std::vector<int>& clause);
 };
 
 #endif //SATSOLVER_SAT_PREPROCESSOR_H
