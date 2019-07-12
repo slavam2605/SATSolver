@@ -5,6 +5,7 @@
 #include "debug.h"
 #include <vector>
 #include <chrono>
+#include <queue>
 
 #ifdef DEBUG
 #include <unordered_set>
@@ -75,6 +76,7 @@ class solver {
     // volatile state
     bool unsat;
     int conflict_clause;
+    std::queue<int> propagation_queue;
 
     // backtrackable state
     std::vector<value_state> values;
@@ -127,7 +129,8 @@ private:
     int analyse_conflict();
     void clear_state();
 
-    void try_propagate(int var);
+    void propagate_all();
+    void propagate_var(int var);
 
     bool set_value(int var, bool value, int reason_clause);
     void unset_value(int var);

@@ -38,6 +38,8 @@ void solver::init(bool restart) {
     unsat = false;
     conflict_clause = -1;
     values_count = 0;
+    debug(if (!propagation_queue.empty())
+        debug_logic_error("Propagation queue is not empty on restart"))
 
     if (restart) {
         values.clear();
@@ -143,6 +145,8 @@ std::pair<sat_result, std::vector<int8_t>> solver::solve() {
         return report_result(current_result());
     }
 
+    // TODO: sort clauses with usage count along with LBD and size
+    // TODO: clause deletion while solving (before restart)
     while (unsat || values_count < nb_vars) {
         int next_var;
         bool value;
@@ -171,6 +175,7 @@ std::pair<sat_result, std::vector<int8_t>> solver::solve() {
             debug(debug_logic_error("Decision failed"))
         decisions++;
 
+        propagate_all();
         if (clauses.size() - initial_clauses_count > current_clause_limit) {
             init(true);
             apply_prior_values();
@@ -381,9 +386,22 @@ int solver::current_decision_level() {
     return (int) snapshots.size();
 }
 
-void solver::try_propagate(int var) {
-    std::vector<std::pair<int, int>> inferred_pairs;
+void solver::propagate_all() {
+    while (!propagation_queue.empty()) {
+        if (unsat)
+            break;
 
+        auto var = propagation_queue.front();
+        propagation_queue.pop();
+        propagate_var(var);
+        propagations++;
+    }
+    while (!propagation_queue.empty()) {
+        propagation_queue.pop();
+    }
+}
+
+void solver::propagate_var(int var) {
     auto ever_found = false;
     for (auto clause_id: var_to_watch_clauses[var]) {
         if (maybe_clause_disabled(clause_id))
@@ -419,7 +437,7 @@ void solver::try_propagate(int var) {
                 );
                 return;
             }
-            inferred_pairs.emplace_back(signed_other, clause_id);
+            set_signed_value(signed_other, clause_id);
         }
     }
     if (ever_found) {
@@ -427,18 +445,6 @@ void solver::try_propagate(int var) {
                 std::remove(var_to_watch_clauses[var].begin(), var_to_watch_clauses[var].end(), -1),
                 var_to_watch_clauses[var].end()
         );
-    }
-    if (unsat)
-        return;
-
-    for (auto [signed_var, reason_clause]: inferred_pairs) {
-        if (get_signed_value(signed_var) == FALSE) {
-            debug(if (!unsat)
-                debug_logic_error("Expected conflict to be found earlier"))
-            return;
-        }
-        if (set_signed_value(signed_var, reason_clause))
-            propagations++;
     }
 }
 
@@ -458,6 +464,7 @@ void solver::apply_prior_values() {
         if (prior_values[var] != UNDEF)
             set_value(var, prior_values[var], -1);
     }
+    propagate_all();
 }
 
 bool solver::set_value(int var, bool value, int reason_clause) {
@@ -480,7 +487,7 @@ bool solver::set_value(int var, bool value, int reason_clause) {
         }
         var_implied_depth[var] = implied_depth;
         var_to_decision_level[var] = current_decision_level();
-        try_propagate(var);
+        propagation_queue.push(var);
         return true;
     }
     debug(if (values[var] != value)
