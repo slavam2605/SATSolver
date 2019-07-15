@@ -4,9 +4,11 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <chrono>
 
 dimacs dimacs::read(const std::string& path) {
     info("Reading dimacs...")
+    auto start = std::chrono::steady_clock::now();
     dimacs result;
     std::ifstream fin(path);
     std::string line;
@@ -46,6 +48,7 @@ dimacs dimacs::read(const std::string& path) {
                 result.clauses.resize(result.clauses.size() - 1);
         }
     }
+    info("Dimacs was read in " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() << " ms")
     result.nb_clauses = (uint32_t) result.clauses.size();
     return result;
 }

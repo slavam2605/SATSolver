@@ -19,6 +19,7 @@ SATSolver.exe [dimacs-file]
     * Binary hyper-resolution [5]
     * Equality reduction [5]
 * Polarity mode: value of decision variable is true, false or random
+* Failed literals probing [6]
 
 ## References:
 1. Biere, Armin, et al. "Conflict-driven clause learning sat solvers." Handbook of Satisfiability, Frontiers in Artificial Intelligence and Applications (2009): 131-153.
@@ -26,3 +27,4 @@ SATSolver.exe [dimacs-file]
 3. Audemard, Gilles, and Laurent Simon. "Predicting learnt clauses quality in modern SAT solvers." Twenty-first International Joint Conference on Artificial Intelligence. 2009.
 4. Subbarayan, Sathiamoorthy, and Dhiraj K. Pradhan. "NiVER: Non-increasing variable elimination resolution for preprocessing SAT instances." International conference on theory and applications of satisfiability testing. Springer, Berlin, Heidelberg, 2004.
 5. Bacchus, Fahiem, and Jonathan Winter. "Effective preprocessing with hyper-resolution and equality reduction." International conference on theory and applications of satisfiability testing. Springer, Berlin, Heidelberg, 2003.
+6. Lynce, Inês, and João Marques-Silva. "Probing-based preprocessing techniques for propositional satisfiability." Proceedings. 15th IEEE International Conference on Tools with Artificial Intelligence. IEEE, 2003.

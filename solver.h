@@ -58,6 +58,14 @@ namespace std
 }
 )
 
+struct clause_stat {
+    uint32_t lbd;
+    uint32_t used;
+
+    clause_stat() = delete;
+    clause_stat(uint32_t lbd, uint32_t used) : lbd(lbd), used(used) {}
+};
+
 class solver {
     unsigned int nb_vars;
     std::vector<std::vector<int>> clauses;
@@ -67,7 +75,7 @@ class solver {
     std::vector<std::pair<int, int>> watch_vars;
     std::vector<value_state> prior_values;
     std::vector<double> vsids_score;
-    std::vector<int> learnt_clause_lbd;
+    std::vector<clause_stat> learnt_clause_stat;
     debug_def(std::unordered_set<std::vector<int>> clause_filter;)
     size_t initial_clauses_count;
     size_t current_clause_limit;
@@ -108,6 +116,7 @@ class solver {
     static constexpr double clause_limit_inc_factor = 1.1;
     static constexpr double clause_keep_ratio = 0.5;
     static constexpr polarity_mode pick_polarity_mode = polarity_mode::FALSE;
+    static constexpr std::chrono::seconds probe_timeout {20};
 public:
     explicit solver(
             const dimacs& formula,
@@ -126,11 +135,13 @@ private:
     void take_snapshot(int next_var);
     std::pair<int, bool> backtrack();
     int current_decision_level();
+    std::vector<int> find_1uip_conflict_clause();
     int analyse_conflict();
     void clear_state();
+    void probe_literals();
 
-    void propagate_all();
-    void propagate_var(int var);
+    void propagate_all(bool prior = false);
+    void propagate_var(int var, bool prior);
 
     bool set_value(int var, bool value, int reason_clause);
     void unset_value(int var);
@@ -150,10 +161,8 @@ private:
     sat_result current_result();
     std::pair<sat_result, std::vector<int8_t>> report_result(bool result);
     bool verify_result();
-    void print_statistics();
+    void print_statistics(std::chrono::milliseconds elapsed);
     void print_format_seconds(double duration);
-
-    debug_def(std::string values_state();)
 };
 
 #endif //SATSOLVER_SOLVER_H
