@@ -71,7 +71,8 @@ class solver {
     std::vector<std::vector<int>> clauses;
 
     // static state
-    std::vector<std::vector<int>> var_to_watch_clauses;
+    std::vector<std::vector<int>> pos_var_to_watch_clauses;
+    std::vector<std::vector<int>> neg_var_to_watch_clauses;
     std::vector<std::pair<int, int>> watch_vars;
     std::vector<value_state> prior_values;
     std::vector<double> vsids_score;
@@ -152,7 +153,7 @@ private:
     bool maybe_clause_disabled(int clause_id);
     bool set_signed_value(int signed_var, int reason_clause);
     value_state get_signed_value(int signed_var);
-    void replace_watch_var(int clause_id, int other_var, int from_var, int to_var);
+    void replace_watch_var(std::vector<int>& from_watch_clauses, int clause_id, int signed_other_var, int signed_to_var);
     void set_prior_value(int signed_var);
 
     bool timer_log();

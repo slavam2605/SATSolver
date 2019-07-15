@@ -47,7 +47,8 @@ void solver::init(bool restart) {
         var_implied_depth.clear();
         var_to_decision_level.clear();
         debug(clause_filter.clear();)
-        var_to_watch_clauses.clear();
+        pos_var_to_watch_clauses.clear();
+        neg_var_to_watch_clauses.clear();
         watch_vars.clear();
         values_stack.clear();
         snapshots.clear();
@@ -109,7 +110,8 @@ void solver::init(bool restart) {
     })
 
     // build 2-watch-literals structures
-    var_to_watch_clauses.resize(nb_vars + 1);
+    pos_var_to_watch_clauses.resize(nb_vars + 1);
+    neg_var_to_watch_clauses.resize(nb_vars + 1);
     watch_vars.resize(clauses.size());
     for (auto i = 0; i < clauses.size(); i++) {
         debug(if (clauses[i].size() <= 1)
@@ -117,8 +119,16 @@ void solver::init(bool restart) {
         auto x = clauses[i][0];
         auto y = clauses[i][1];
         watch_vars[i] = std::make_pair(x, y);
-        var_to_watch_clauses[abs(x)].push_back(i);
-        var_to_watch_clauses[abs(y)].push_back(i);
+        if (x > 0) {
+            pos_var_to_watch_clauses[x].push_back(i);
+        } else {
+            neg_var_to_watch_clauses[-x].push_back(i);
+        }
+        if (y > 0) {
+            pos_var_to_watch_clauses[y].push_back(i);
+        } else {
+            neg_var_to_watch_clauses[-y].push_back(i);
+        }
     }
 
     probe_literals();
@@ -191,7 +201,7 @@ void solver::probe_literals() {
     }
 
     auto duration = std::chrono::steady_clock::now() - start;
-    info("Failed literals probing: " << std::chrono::duration_cast<std::chrono::milliseconds>(duration).count() << " ms")
+    info("Failed literals probing: " << std::chrono::duration_cast<std::chrono::milliseconds>(duration).count() << " ms, tried: " << var_count)
 }
 
 void solver::clear_state() {
@@ -491,18 +501,16 @@ void solver::propagate_all(bool prior) {
 
 void solver::propagate_var(int var, bool prior) {
     auto ever_found = false;
-    for (auto clause_id: var_to_watch_clauses[var]) {
-        if (maybe_clause_disabled(clause_id))
-            continue;
+    auto signed_self = values[var] == FALSE ? var : -var;
+    auto& watch_clauses = signed_self > 0
+            ? pos_var_to_watch_clauses[var]
+            : neg_var_to_watch_clauses[var];
 
-        auto watch_pair = watch_vars[clause_id];
-        int signed_self;
-        int signed_other;
-        if (abs(watch_pair.first) == var) {
-            std::tie(signed_self, signed_other) = watch_pair;
-        } else {
-            std::tie(signed_other, signed_self) = watch_pair;
-        }
+    for (auto clause_id: watch_clauses) {
+        auto signed_other = watch_vars[clause_id].first == signed_self
+                ? watch_vars[clause_id].second
+                : watch_vars[clause_id].first;
+
         auto found = false;
         for (auto signed_candidate_var: clauses[clause_id]) {
             if (signed_candidate_var == signed_other ||
@@ -511,7 +519,7 @@ void solver::propagate_var(int var, bool prior) {
                 continue;
 
             found = true;
-            replace_watch_var(clause_id, signed_other, signed_self, signed_candidate_var);
+            replace_watch_var(watch_clauses, clause_id, signed_other, signed_candidate_var);
             break;
         }
         ever_found |= found;
@@ -519,9 +527,9 @@ void solver::propagate_var(int var, bool prior) {
             if (get_signed_value(signed_other) == FALSE) {
                 unsat = true;
                 conflict_clause = clause_id;
-                var_to_watch_clauses[var].erase(
-                        std::remove(var_to_watch_clauses[var].begin(), var_to_watch_clauses[var].end(), -1),
-                        var_to_watch_clauses[var].end()
+                watch_clauses.erase(
+                        std::remove(watch_clauses.begin(), watch_clauses.end(), -1),
+                        watch_clauses.end()
                 );
                 return;
             }
@@ -532,22 +540,25 @@ void solver::propagate_var(int var, bool prior) {
         }
     }
     if (ever_found) {
-        var_to_watch_clauses[var].erase(
-                std::remove(var_to_watch_clauses[var].begin(), var_to_watch_clauses[var].end(), -1),
-                var_to_watch_clauses[var].end()
+        watch_clauses.erase(
+                std::remove(watch_clauses.begin(), watch_clauses.end(), -1),
+                watch_clauses.end()
         );
     }
 }
 
-void solver::replace_watch_var(int clause_id, int signed_other_var, int signed_from_var, int signed_to_var) {
-    auto from_var = abs(signed_from_var);
-    auto position = std::find(var_to_watch_clauses[from_var].begin(), var_to_watch_clauses[from_var].end(), clause_id);
-    debug(if (position == var_to_watch_clauses[from_var].end())
-        debug_logic_error("from_var: " << from_var << " was not a watch literal for clause_id: " << clause_id))
+void solver::replace_watch_var(std::vector<int>& from_watch_clauses, int clause_id, int signed_other_var, int signed_to_var) {
+    auto position = std::find(from_watch_clauses.begin(), from_watch_clauses.end(), clause_id);
+    debug(if (position == from_watch_clauses.end())
+        debug_logic_error("from_var was not a watch literal for clause_id: " << clause_id))
 
     *position = -1;
     watch_vars[clause_id] = std::make_pair(signed_other_var, signed_to_var);
-    var_to_watch_clauses[abs(signed_to_var)].push_back(clause_id);
+    if (signed_to_var > 0) {
+        pos_var_to_watch_clauses[signed_to_var].push_back(clause_id);
+    } else {
+        neg_var_to_watch_clauses[-signed_to_var].push_back(clause_id);
+    }
 }
 
 void solver::apply_prior_values() {
@@ -663,8 +674,16 @@ bool solver::add_clause(const std::vector<int>& clause, int next_decision_level)
         debug_logic_error("Could not find potentially UNDEF watch variables for new clause, watch1 = " << watch1 << ", watch2 = " << watch2))
 
     watch_vars.emplace_back(watch1, watch2);
-    var_to_watch_clauses[abs(watch1)].push_back(clause_id);
-    var_to_watch_clauses[abs(watch2)].push_back(clause_id);
+    if (watch1 > 0) {
+        pos_var_to_watch_clauses[watch1].push_back(clause_id);
+    } else {
+        neg_var_to_watch_clauses[-watch1].push_back(clause_id);
+    }
+    if (watch2 > 0) {
+        pos_var_to_watch_clauses[watch2].push_back(clause_id);
+    } else {
+        neg_var_to_watch_clauses[-watch2].push_back(clause_id);
+    }
     return true;
 }
 
