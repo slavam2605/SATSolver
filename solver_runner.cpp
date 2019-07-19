@@ -20,7 +20,7 @@ sat_result solver_runner::solve(bool preprocess, std::chrono::seconds timeout) {
         result = solve_result;
     } else {
         auto [formula, remapper] = preprocesor.preprocess();
-        if (formula.clauses.size() == 1 && formula.clauses[0].empty()) {
+        if (formula.clauses.size() == 1 && formula.clauses[0] == nullptr) {
             result = UNSAT;
         } else {
             solver solver(formula, timeout);
@@ -63,14 +63,14 @@ bool solver_runner::verify_result(const dimacs& formula, const std::vector<int8_
     for (auto clause_id = 0; clause_id < formula.nb_clauses; clause_id++) {
         const auto& clause = formula.clauses[clause_id];
         auto all_false = true;
-        for (auto signed_var: clause) {
-            if (values[abs(signed_var)] ^ (signed_var < 0) != FALSE) {
+        for (auto lit: clause->literals) {
+            if (values[lit.var()] ^ !lit.sign() != FALSE) {
                 all_false = false;
                 break;
             }
         }
         if (all_false) {
-            info(trace_print_vector(clause) << " => false")
+            info(debug_print_literals(clause->literals) << " => false")
             result = false;
         }
     }

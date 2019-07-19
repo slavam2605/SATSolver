@@ -18,7 +18,7 @@ void sat_remapper::add_undef_var(int var) {
     variable_map[var] = next_var++;
 }
 
-void sat_remapper::add_ver_var(int var, const std::vector<std::vector<int>>& clauses) {
+void sat_remapper::add_ver_var(int var, const std::vector<std::vector<literal>>& clauses) {
     prior_map[var] = preprocessor_value_state::VER;
     remap_events.emplace_back(var, remap_event::create_ver(clauses));
 }
@@ -28,9 +28,9 @@ void sat_remapper::add_any_var(int var) {
     prior_map[var] = preprocessor_value_state::TRUE;
 }
 
-void sat_remapper::add_eq_var(int var, int eq_var) {
+void sat_remapper::add_eq_var(int var, literal eq_lit) {
     prior_map[var] = preprocessor_value_state::EQ;
-    remap_events.emplace_back(var, remap_event::create_eq(eq_var));
+    remap_events.emplace_back(var, remap_event::create_eq(eq_lit));
 }
 
 std::vector<int8_t> sat_remapper::remap(std::vector<int8_t> values) {
@@ -67,16 +67,13 @@ std::vector<int8_t> sat_remapper::remap(std::vector<int8_t> values) {
                 for (const auto& clause: event.ver_clauses) {
                     auto unsat = true;
                     auto var_positive = true;
-                    for (int signed_var: clause) {
-                        if (signed_var == var) {
-                            var_positive = true;
+                    for (literal lit: clause) {
+                        if (lit.var() == var) {
+                            var_positive = lit.sign();
                             continue;
                         }
-                        if (signed_var == -var) {
-                            var_positive = false;
-                            continue;
-                        }
-                        auto value = result[abs(signed_var)];
+
+                        auto value = result[lit.var()];
                         switch (value) {
                             case preprocessor_value_state::TRUE:
                             case preprocessor_value_state::FALSE:
@@ -84,8 +81,8 @@ std::vector<int8_t> sat_remapper::remap(std::vector<int8_t> values) {
                             default:
                             debug(debug_logic_error("Expected TRUE or FALSE, found: " << (int) result[var]))
                         }
-                        if ((value == preprocessor_value_state::TRUE && signed_var > 0) ||
-                            (value == preprocessor_value_state::FALSE && signed_var < 0)) {
+                        if ((value == preprocessor_value_state::TRUE && lit.sign()) ||
+                            (value == preprocessor_value_state::FALSE && !lit.sign())) {
                             unsat = false;
                             break;
                         }
@@ -103,10 +100,10 @@ std::vector<int8_t> sat_remapper::remap(std::vector<int8_t> values) {
                 break;
             }
             case remap_event_type::EQ: {
-                debug(if (result[abs(event.eq_var)] != preprocessor_value_state::TRUE && result[abs(event.eq_var)] != preprocessor_value_state::FALSE)
-                    debug_logic_error("eq_var is not TRUE or FALSE, value: " << (int) result[abs(event.eq_var)]))
+                debug(if (result[event.eq_lit.var()] != preprocessor_value_state::TRUE && result[event.eq_lit.var()] != preprocessor_value_state::FALSE)
+                    debug_logic_error("eq_lit is not TRUE or FALSE, value: " << (int) result[event.eq_lit.var()]))
 
-                auto value = (result[abs(event.eq_var)] == preprocessor_value_state::TRUE) ^ (event.eq_var < 0);
+                auto value = (result[event.eq_lit.var()] == preprocessor_value_state::TRUE) ^ !event.eq_lit.sign();
                 result[var] = value ? preprocessor_value_state::TRUE : preprocessor_value_state::FALSE;
                 break;
             }

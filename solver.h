@@ -3,6 +3,7 @@
 
 #include "dimacs.h"
 #include "debug.h"
+#include "solver_types.h"
 #include <vector>
 #include <chrono>
 #include <queue>
@@ -32,59 +33,21 @@ enum class polarity_mode {
     TRUE, FALSE, RANDOM
 };
 
-debug_def(
-template <class T>
-inline void hash_combine(std::size_t& seed, T const& v)
-{
-    seed ^= std::hash<T>()(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-}
-
-namespace std
-{
-    template<typename T>
-    struct hash<vector<T>>
-    {
-        typedef vector<T> argument_type;
-        typedef std::size_t result_type;
-        result_type operator()(argument_type const& in) const
-        {
-            size_t size = in.size();
-            size_t seed = 0;
-            for (size_t i = 0; i < size; i++)
-                hash_combine(seed, in[i]);
-            return seed;
-        }
-    };
-}
-)
-
-struct clause_stat {
-    uint32_t lbd;
-    uint32_t used;
-
-    clause_stat() = delete;
-    clause_stat(uint32_t lbd, uint32_t used) : lbd(lbd), used(used) {}
-};
-
 class solver {
     unsigned int nb_vars;
-    std::vector<std::vector<int>> clauses;
+    std::vector<clause*> clauses;
 
     // static state
-    std::vector<std::vector<int>> pos_var_to_watch_clauses;
-    std::vector<std::vector<int>> neg_var_to_watch_clauses;
-    std::vector<std::pair<int, int>> watch_vars;
+    std::vector<std::vector<int>> var_to_watch_clauses[2];
+    std::vector<std::pair<literal, literal>> watch_vars;
     std::vector<value_state> prior_values;
     std::vector<double> vsids_score;
-    std::vector<clause_stat> learnt_clause_stat;
-    debug_def(std::unordered_set<std::vector<int>> clause_filter;)
-    size_t initial_clauses_count;
     size_t current_clause_limit;
     std::chrono::seconds timeout;
 
     // volatile state
     bool unsat;
-    int conflict_clause;
+    clause* pconflict_clause;
     std::queue<int> propagation_queue;
 
     // backtrackable state
@@ -136,7 +99,7 @@ private:
     void take_snapshot(int next_var);
     std::pair<int, bool> backtrack();
     int current_decision_level();
-    std::vector<int> find_1uip_conflict_clause();
+    std::vector<literal> find_1uip_conflict_clause();
     int analyse_conflict();
     void clear_state();
     void probe_literals();
@@ -147,14 +110,14 @@ private:
     bool set_value(int var, bool value, int reason_clause);
     void unset_value(int var);
 
-    bool add_clause(const std::vector<int>& clause, int next_decision_level);
+    bool add_clause(std::vector<literal>&& literals, int next_decision_level);
 
     void apply_prior_values();
     bool maybe_clause_disabled(int clause_id);
-    bool set_signed_value(int signed_var, int reason_clause);
-    value_state get_signed_value(int signed_var);
-    void replace_watch_var(std::vector<int>& from_watch_clauses, int clause_id, int signed_other_var, int signed_to_var);
-    void set_prior_value(int signed_var);
+    bool set_literal_value(literal lit, int reason_clause);
+    value_state get_literal_value(literal lit);
+    void replace_watch_var(std::vector<int>& from_watch_clauses, int clause_id, literal other_lit, literal to_lit);
+    void set_prior_value(literal lit);
 
     bool timer_log();
     void slow_log();

@@ -7,12 +7,13 @@
 #include "debug.h"
 #include "dimacs.h"
 #include "sat_remapper.h"
+#include "solver_types.h"
 
 class sat_preprocessor {
     uint32_t nb_vars;
-    std::vector<std::vector<int>> clauses;
+    std::vector<std::vector<literal>> clauses;
     std::vector<preprocessor_value_state> prior_values;
-    std::unordered_map<int, std::unordered_set<int>> implication_graph;
+    std::unordered_map<literal, std::unordered_set<literal>> implication_graph;
     sat_remapper remapper;
     bool unsat;
     std::chrono::steady_clock::time_point start_time;
@@ -40,14 +41,14 @@ private:
     bool is_interrupted_hyp_bin_res(std::chrono::steady_clock::time_point start);
     bool check_unsat();
     debug_def(void print_clause_statistics();)
-    void add_implication_edge(int from, int to);
-    bool has_implication_edge(int from, int to);
-    std::vector<int> resolve(int var, const std::vector<int>& clause1, const std::vector<int>& clause2);
+    void add_implication_edge(literal from, literal to);
+    bool has_implication_edge(literal from, literal to);
+    std::vector<literal> resolve(int var, const std::vector<literal>& clause1, const std::vector<literal>& clause2);
     bool remove_true_clauses();
-    bool remove_false_literals(std::vector<int>& clause);
-    std::vector<int>::const_iterator find_true_literal(const std::vector<int>& clause);
-    void set_signed_prior_value(int signed_var);
-    preprocessor_value_state get_signed_prior_value(int signed_var);
+    bool remove_false_literals(std::vector<literal>& clause);
+    std::vector<literal>::const_iterator find_true_literal(const std::vector<literal>& clause);
+    void set_signed_prior_value(literal lit);
+    preprocessor_value_state get_signed_prior_value(literal lit);
 };
 
 #endif //SATSOLVER_SAT_PREPROCESSOR_H

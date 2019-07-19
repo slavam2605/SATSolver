@@ -6,15 +6,18 @@
 #include "sat_preprocessor.h"
 #include "sat_utils.h"
 #include "debug.h"
+#include "clause_allocator.h"
 
 sat_preprocessor::sat_preprocessor(const dimacs &formula) :
         nb_vars(formula.nb_vars),
-        clauses(formula.clauses),
         remapper(nb_vars),
         propagated(0),
         niver_eliminated(0),
         hyp_bin_res_resolved(0),
         equality_eliminated(0) {
+    for (auto pclause: formula.clauses) {
+        clauses.push_back(pclause->literals);
+    }
     prior_values.resize(nb_vars + 1);
     std::fill(prior_values.begin(), prior_values.end(), preprocessor_value_state::UNDEF);
     unsat = false;
@@ -38,8 +41,8 @@ std::pair<dimacs, sat_remapper> sat_preprocessor::preprocess() {
         debug(
             std::unordered_set<int> vars;
             for (const auto& clause: clauses) {
-                for (int signed_var: clause) {
-                    vars.insert(abs(signed_var));
+                for (literal lit: clause) {
+                    vars.insert(lit.var());
                 }
             }
             info("nb_vars = " << vars.size() << ", nb_clauses = " << clauses.size())
@@ -48,7 +51,7 @@ std::pair<dimacs, sat_remapper> sat_preprocessor::preprocess() {
     }
     if (check_unsat()) {
         info("UNSAT in preprocessor")
-        return std::make_pair(dimacs{0, 1, {{}}}, remapper);
+        return std::make_pair(dimacs{0, 1, {nullptr}}, remapper);
     }
 
     dimacs new_formula;
@@ -75,17 +78,19 @@ std::pair<dimacs, sat_remapper> sat_preprocessor::preprocess() {
         }
     }
     for (auto& clause: clauses) {
-        for (int& signed_var: clause) {
-            auto sign = signed_var > 0 ? 1 : -1;
-            auto var = abs(signed_var);
+        for (literal& lit: clause) {
+            auto sign = lit.sign() ? 1 : -1;
+            auto var = lit.var();
             debug(if (remapper.get_prior(var) != preprocessor_value_state::UNDEF)
                 debug_logic_error("Prior value is still in preprocessed clause: " << var << ", value: " << (int) remapper.get_prior(var)))
 
-            signed_var = sign * remapper.get_mapped_variable(var);
+            lit = literal(sign * remapper.get_mapped_variable(var));
         }
     }
     new_formula.nb_vars = new_nb_vars;
-    new_formula.clauses = clauses;
+    for (auto& clause: clauses) {
+        new_formula.clauses.push_back(clause_allocator::allocate_clause(std::move(clause)));
+    }
     new_formula.nb_clauses = (uint32_t) new_formula.clauses.size();
     info("Preprocessor: nb_vars: " << nb_vars << " -> " << new_nb_vars)
     info("Preprocessor: nb_clauses: " << old_nb_clauses << " -> " << new_formula.nb_clauses)
@@ -102,13 +107,13 @@ std::pair<dimacs, sat_remapper> sat_preprocessor::preprocess() {
 void sat_preprocessor::filter_implication_graph() {
     for (auto var = 1; var <= nb_vars; var++) {
         if (prior_values[var] != preprocessor_value_state::UNDEF) {
-            implication_graph[var].clear();
-            implication_graph[-var].clear();
+            implication_graph[literal(var)].clear();
+            implication_graph[literal(-var)].clear();
         }
     }
     for (auto& [_, set]: implication_graph) {
         for (auto iter = set.begin(), last = set.end(); iter != last;) {
-            if (prior_values[abs(*iter)] != preprocessor_value_state::UNDEF) {
+            if (prior_values[iter->var()] != preprocessor_value_state::UNDEF) {
                 iter = set.erase(iter);
             } else {
                 ++iter;
@@ -117,11 +122,11 @@ void sat_preprocessor::filter_implication_graph() {
     }
 }
 
-void sat_preprocessor::add_implication_edge(int from, int to) {
+void sat_preprocessor::add_implication_edge(literal from, literal to) {
     implication_graph[from].insert(to);
 };
 
-bool sat_preprocessor::has_implication_edge(int from, int to) {
+bool sat_preprocessor::has_implication_edge(literal from, literal to) {
     const auto& set = implication_graph[from];
     return set.find(to) != set.end();
 };
@@ -133,12 +138,12 @@ bool sat_preprocessor::hyper_binary_resolution() {
     info("Started HypBinRes...")
     bool changed = false;
     auto local_start = std::chrono::steady_clock::now();
-    std::unordered_set<int> unit_literals;
+    std::unordered_set<literal> unit_literals;
 
     for (const auto& clause: clauses) {
         if (clause.size() == 2) {
-            add_implication_edge(-clause[0], clause[1]);
-            add_implication_edge(-clause[1], clause[0]);
+            add_implication_edge(~clause[0], clause[1]);
+            add_implication_edge(~clause[1], clause[0]);
         }
         if (clause.size() == 1) {
             unit_literals.insert(clause[0]);
@@ -150,37 +155,37 @@ bool sat_preprocessor::hyper_binary_resolution() {
             break;
 
         auto clause = clauses[clause_id];
-        std::unordered_map<int, int> literal_count {};
-        for (int signed_var: clause) {
-            for (int implied_literal: implication_graph[signed_var]) {
-                if (prior_values[abs(implied_literal)] != preprocessor_value_state::UNDEF)
+        std::unordered_map<literal, int> literal_count {};
+        for (literal lit: clause) {
+            for (literal implied_literal: implication_graph[lit]) {
+                if (prior_values[implied_literal.var()] != preprocessor_value_state::UNDEF)
                     continue;
 
                 literal_count[implied_literal]++;
             }
         }
-        for (auto [literal, count]: literal_count) {
+        for (auto [lit, count]: literal_count) {
             if (count < clause.size() - 1)
                 continue;
 
             auto failed = false;
-            auto missed_literal = 0;
-            for (int signed_var: clause) {
-                if (!has_implication_edge(signed_var, literal)) {
-                    if (missed_literal != 0) {
+            auto missed_literal = literal::undef;
+            for (auto other_lit: clause) {
+                if (!has_implication_edge(other_lit, lit)) {
+                    if (missed_literal != literal::undef) {
                         failed = true;
                         break;
                     }
-                    missed_literal = signed_var;
+                    missed_literal = other_lit;
                 }
             }
             if (failed)
                 continue;
 
-            if (missed_literal == 0 || missed_literal == literal) {
-                if (unit_literals.find(literal) == unit_literals.end()) {
-                    clauses.push_back({literal});
-                    unit_literals.insert(literal);
+            if (missed_literal == literal::undef || missed_literal == lit) {
+                if (unit_literals.find(lit) == unit_literals.end()) {
+                    clauses.push_back({lit});
+                    unit_literals.insert(lit);
                     hyp_bin_res_resolved++;
                     changed = true;
                 }
@@ -188,14 +193,14 @@ bool sat_preprocessor::hyper_binary_resolution() {
             }
 
             // tautology
-            if (missed_literal == -literal)
+            if (missed_literal == ~lit)
                 continue;
 
-            if (has_implication_edge(-missed_literal, literal))
+            if (has_implication_edge(~missed_literal, lit))
                 continue;
 
-            add_implication_edge(-missed_literal, literal);
-            add_implication_edge(-literal, missed_literal);
+            add_implication_edge(~missed_literal, lit);
+            add_implication_edge(~lit, missed_literal);
         }
     }
 
@@ -208,29 +213,30 @@ bool sat_preprocessor::eliminate_equality() {
 
     info("Started equality elimination...")
     auto changed = false;
-    std::vector<int> equality;
-    equality.resize(nb_vars + 1);
+    std::vector<literal> equality;
+    equality.resize(nb_vars + 1, literal::undef);
 
-    auto set_equal = [&equality](int signed_from, int signed_to) {
-        if (abs(signed_to) < abs(signed_from))
-            std::swap(signed_from, signed_to);
+    auto set_equal = [&equality](literal from_lit, literal to_lit) {
+        if (to_lit.var() < from_lit.var())
+            std::swap(from_lit, to_lit);
 
-        auto from = abs(signed_from);
-        auto sign = signed_from > 0 ? 1 : -1;
-        equality[from] = signed_to * sign;
+        auto from = from_lit.var();
+        equality[from] = to_lit ^ from_lit.sign();
     };
-    auto get_equal = [&equality](int signed_from) -> int {
-        auto from = abs(signed_from);
-        auto sign = signed_from > 0 ? 1 : -1;
-        return equality[from] * sign;
+    auto get_equal = [&equality](literal from_lit) -> literal {
+        auto eq_lit = equality[from_lit.var()];
+        if (eq_lit == literal::undef)
+            return literal::undef;
+
+        return eq_lit ^ from_lit.sign();
     };
 
     for (const auto& [from, set]: implication_graph) {
-        if (prior_values[abs(from)] != preprocessor_value_state::UNDEF)
+        if (prior_values[from.var()] != preprocessor_value_state::UNDEF)
             continue;
 
         for (auto to: set) {
-            if (prior_values[abs(to)] != preprocessor_value_state::UNDEF)
+            if (prior_values[to.var()] != preprocessor_value_state::UNDEF)
                 continue;
 
             if (has_implication_edge(to, from)) {
@@ -238,24 +244,22 @@ bool sat_preprocessor::eliminate_equality() {
             }
         }
     }
-
     for (auto var = 1; var <= nb_vars; var++) {
-        auto eq_var = get_equal(var);
-        while (get_equal(eq_var) != 0) {
+        auto eq_var = get_equal(literal(var));
+        while (get_equal(eq_var) != literal::undef) {
             eq_var = get_equal(eq_var);
         }
-        if (eq_var != 0) {
-            set_equal(var, eq_var);
+        if (eq_var != literal::undef) {
+            set_equal(literal(var), eq_var);
         }
     }
-
     for (auto& clause: clauses) {
-        for (int& signed_var: clause) {
-            auto eq_var = get_equal(signed_var);
-            if (eq_var == 0)
+        for (literal& lit: clause) {
+            auto eq_var = get_equal(lit);
+            if (eq_var == literal::undef)
                 continue;
 
-            signed_var = eq_var;
+            lit = eq_var;
             changed = true;
         }
         std::sort(clause.begin(), clause.end());
@@ -273,8 +277,8 @@ bool sat_preprocessor::eliminate_equality() {
     );
 
     for (auto var = 1; var <= nb_vars; var++) {
-        auto eq_var = get_equal(var);
-        if (eq_var == 0)
+        auto eq_var = get_equal(literal(var));
+        if (eq_var == literal::undef)
             continue;
 
         prior_values[var] = preprocessor_value_state::EQ;
@@ -285,12 +289,12 @@ bool sat_preprocessor::eliminate_equality() {
     return changed;
 }
 
-std::vector<int> sat_preprocessor::resolve(int var, const std::vector<int>& clause1, const std::vector<int>& clause2) {
-    std::vector<int> result;
+std::vector<literal> sat_preprocessor::resolve(int var, const std::vector<literal>& clause1, const std::vector<literal>& clause2) {
+    std::vector<literal> result;
     result.insert(result.end(), clause1.begin(), clause1.end());
     result.insert(result.end(), clause2.begin(), clause2.end());
-    auto remove_var = std::remove(result.begin(), result.end(), var);
-    auto remove_nvar = std::remove(result.begin(), remove_var, -var);
+    auto remove_var = std::remove(result.begin(), result.end(), literal(var));
+    auto remove_nvar = std::remove(result.begin(), remove_var, literal(-var));
     std::sort(result.begin(), remove_nvar);
     auto remove_unique = std::unique(result.begin(), remove_nvar);
     result.erase(remove_unique, result.end());
@@ -310,11 +314,11 @@ bool sat_preprocessor::niver() {
     pvar_clauses.resize(nb_vars + 1);
     nvar_clauses.resize(nb_vars + 1);
     for (auto clause_id = 0; clause_id < clauses.size(); clause_id++) {
-        for (int signed_var: clauses[clause_id]) {
-            if (signed_var > 0) {
-                pvar_clauses[signed_var].push_back(clause_id);
+        for (literal lit: clauses[clause_id]) {
+            if (lit.sign()) {
+                pvar_clauses[lit.var()].push_back(clause_id);
             } else {
-                nvar_clauses[-signed_var].push_back(clause_id);
+                nvar_clauses[lit.var()].push_back(clause_id);
             }
         }
     }
@@ -351,7 +355,7 @@ bool sat_preprocessor::niver() {
         for (int nclause_id: nvar_clauses[var]) {
             old_size += clauses[nclause_id].size();
         }
-        std::vector<std::vector<int>> new_clauses;
+        std::vector<std::vector<literal>> new_clauses;
         for (int pclause_id: pvar_clauses[var]) {
             for (int nclause_id: nvar_clauses[var]) {
                 auto new_clause = resolve(var, clauses[pclause_id], clauses[nclause_id]);
@@ -368,12 +372,12 @@ bool sat_preprocessor::niver() {
 
         if (new_size <= old_size) {
             if (pvar_clauses[var].size() == 0) {
-                set_signed_prior_value(-var);
+                set_signed_prior_value(literal(-var));
             } else if (nvar_clauses[var].size() == 0) {
-                set_signed_prior_value(var);
+                set_signed_prior_value(literal(var));
             } else {
                 prior_values[var] = preprocessor_value_state::VER;
-                std::vector<std::vector<int>> ver_clauses;
+                std::vector<std::vector<literal>> ver_clauses;
                 for (int pclause_id: pvar_clauses[var]) {
                     ver_clauses.push_back(clauses[pclause_id]);
                 }
@@ -383,14 +387,14 @@ bool sat_preprocessor::niver() {
                 remapper.add_ver_var(var, ver_clauses);
             }
             for (int pclause_id: pvar_clauses[var]) {
-                for (int signed_var: clauses[pclause_id]) {
-                    invalidated[abs(signed_var)] = true;
+                for (literal lit: clauses[pclause_id]) {
+                    invalidated[lit.var()] = true;
                 }
                 sat_utils::invalidate_clause(clauses[pclause_id]);
             }
             for (int nclause_id: nvar_clauses[var]) {
-                for (int signed_var: clauses[nclause_id]) {
-                    invalidated[abs(signed_var)] = true;
+                for (literal lit: clauses[nclause_id]) {
+                    invalidated[lit.var()] = true;
                 }
                 sat_utils::invalidate_clause(clauses[nclause_id]);
             }
@@ -423,16 +427,16 @@ bool sat_preprocessor::propagate_all() {
                 propagated++;
             }
         }
-        for (const auto& [literal, set]: implication_graph) {
-            if (get_signed_prior_value(literal) != preprocessor_value_state::TRUE)
+        for (const auto& [lit, set]: implication_graph) {
+            if (get_signed_prior_value(lit) != preprocessor_value_state::TRUE)
                 continue;
 
-            for (auto implied_literal: set) {
-                if (prior_values[abs(implied_literal)] != preprocessor_value_state::UNDEF)
+            for (literal implied_lit: set) {
+                if (prior_values[implied_lit.var()] != preprocessor_value_state::UNDEF)
                     continue;
 
                 changed = true;
-                set_signed_prior_value(implied_literal);
+                set_signed_prior_value(implied_lit);
                 propagated++;
             }
         }
@@ -456,11 +460,11 @@ bool sat_preprocessor::remove_true_clauses() {
     return old_size != clauses.size();
 }
 
-bool sat_preprocessor::remove_false_literals(std::vector<int>& clause) {
+bool sat_preprocessor::remove_false_literals(std::vector<literal>& clause) {
     auto old_size = clause.size();
     clause.erase(
-            std::remove_if(clause.begin(), clause.end(), [this](int signed_var) {
-                return get_signed_prior_value(signed_var) == preprocessor_value_state::FALSE;
+            std::remove_if(clause.begin(), clause.end(), [this](literal lit) {
+                return get_signed_prior_value(lit) == preprocessor_value_state::FALSE;
             }),
             clause.end()
     );
@@ -468,31 +472,28 @@ bool sat_preprocessor::remove_false_literals(std::vector<int>& clause) {
     return old_size != clause.size();
 }
 
-std::vector<int>::const_iterator sat_preprocessor::find_true_literal(const std::vector<int>& clause) {
-    return std::find_if(clause.begin(), clause.end(), [this](int signed_var) {
-        return get_signed_prior_value(signed_var) == preprocessor_value_state::TRUE;
+std::vector<literal>::const_iterator sat_preprocessor::find_true_literal(const std::vector<literal>& clause) {
+    return std::find_if(clause.begin(), clause.end(), [this](literal lit) {
+        return get_signed_prior_value(lit) == preprocessor_value_state::TRUE;
     });
 }
 
-preprocessor_value_state sat_preprocessor::get_signed_prior_value(int signed_var) {
-    auto value = prior_values[abs(signed_var)];
+preprocessor_value_state sat_preprocessor::get_signed_prior_value(literal lit) {
+    auto value = prior_values[lit.var()];
     if (value != preprocessor_value_state::TRUE && value != preprocessor_value_state::FALSE)
         return value;
 
-    if ((value == preprocessor_value_state::TRUE) ^ (signed_var < 0))
+    if ((value == preprocessor_value_state::TRUE) ^ !lit.sign())
         return preprocessor_value_state::TRUE;
     else
         return preprocessor_value_state::FALSE;
 }
 
-void sat_preprocessor::set_signed_prior_value(int signed_var) {
-    debug(if (prior_values[abs(signed_var)] != preprocessor_value_state::UNDEF)
-        debug_logic_error("Tried to reassign value in preprocessing: " << signed_var))
+void sat_preprocessor::set_signed_prior_value(literal lit) {
+    debug(if (prior_values[lit.var()] != preprocessor_value_state::UNDEF)
+        debug_logic_error("Tried to reassign value in preprocessing: " << lit.var()))
 
-    if (signed_var > 0)
-        prior_values[signed_var] = preprocessor_value_state::TRUE;
-    else
-        prior_values[-signed_var] = preprocessor_value_state::FALSE;
+    prior_values[lit.var()] = lit.sign() ? preprocessor_value_state::TRUE : preprocessor_value_state::FALSE;
 }
 
 bool sat_preprocessor::is_interrupted() {

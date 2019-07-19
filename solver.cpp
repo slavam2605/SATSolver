@@ -1,5 +1,6 @@
 #include "solver.h"
 #include "debug.h"
+#include "clause_allocator.h"
 #include <sstream>
 #include <iostream>
 #include <iomanip>
@@ -22,21 +23,20 @@ solver::solver(const dimacs &formula, std::chrono::seconds timeout)
     std::fill(prior_values.begin(), prior_values.end(), UNDEF);
 
     // init clauses
-    for (const auto& clause: formula.clauses) {
-        if (clause.size() == 1) {
-            set_prior_value(clause[0]);
+    for (auto pclause: formula.clauses) {
+        if (pclause->size() == 1) {
+            set_prior_value(pclause->literals[0]);
         } else {
-            clauses.push_back(clause);
+            clauses.push_back(pclause);
         }
     }
-    initial_clauses_count = clauses.size();
 
     init(false);
 }
 
 void solver::init(bool restart) {
     unsat = false;
-    conflict_clause = -1;
+    pconflict_clause = nullptr;
     values_count = 0;
     debug(if (!propagation_queue.empty())
         debug_logic_error("Propagation queue is not empty on restart"))
@@ -46,45 +46,46 @@ void solver::init(bool restart) {
         antecedent_clauses.clear();
         var_implied_depth.clear();
         var_to_decision_level.clear();
-        debug(clause_filter.clear();)
-        pos_var_to_watch_clauses.clear();
-        neg_var_to_watch_clauses.clear();
+        var_to_watch_clauses[0].clear();
+        var_to_watch_clauses[1].clear();
         watch_vars.clear();
         values_stack.clear();
         snapshots.clear();
 
-        std::vector<std::pair<std::vector<int>, clause_stat>> learnt_clauses;
-        for (auto i = 0; i < clauses.size() - initial_clauses_count; i++) {
-            learnt_clauses.emplace_back(clauses[i + initial_clauses_count], learnt_clause_stat[i]);
-        }
-        clauses.resize(initial_clauses_count);
-        learnt_clause_stat.clear();
+        auto initial_clauses_count = 0;
+        for (auto pclause: clauses) {
+            if (pclause->is_learnt())
+                break;
 
-        std::sort(learnt_clauses.begin(), learnt_clauses.end(), [this](const auto& p1, const auto& p2) {
-            auto [lbd1, used1] = p1.second;
-            auto [lbd2, used2] = p2.second;
-            return lbd1 < lbd2;
+            initial_clauses_count++;
+        }
+
+        debug(
+            for (auto clause_id = initial_clauses_count; clause_id < clauses.size(); clause_id++) {
+                if (!clauses[clause_id]->is_learnt())
+                    debug_logic_error("Found a non-learnt clause after prefix")
+            }
+        )
+
+        std::sort(clauses.begin() + initial_clauses_count, clauses.end(), [this](auto p1, auto p2) {
+            return p1->stat.lbd < p2->stat.lbd;
         });
-        auto rest_count = (int) (learnt_clauses.size() * clause_keep_ratio);
+        auto keep_count = (size_t) ((clauses.size() - initial_clauses_count) * clause_keep_ratio) + initial_clauses_count;
         // Always keep 'glue' clauses
-        while (rest_count < learnt_clauses.size() && learnt_clauses[rest_count].second.lbd <= 2)
-            rest_count++;
+        while (keep_count < clauses.size() && clauses[keep_count]->stat.lbd <= 2)
+            keep_count++;
 
-        for (auto i = 0; i < rest_count; i++) {
-            clauses.push_back(learnt_clauses[i].first);
-            learnt_clause_stat.emplace_back(learnt_clauses[i].second.lbd, learnt_clauses[i].second.used);
-        }
-
-        current_clause_limit = (size_t) (current_clause_limit * clause_limit_inc_factor);
+        clauses.resize(keep_count);
+        current_clause_limit = (size_t) ((current_clause_limit - initial_clauses_count)* clause_limit_inc_factor + initial_clauses_count);
     } else {
-        current_clause_limit = (size_t) (clauses.size() * clause_limit_init_factor);
+        current_clause_limit = (size_t) (clauses.size() * (clause_limit_init_factor + 1));
         log_iteration = 0;
 
         // init vsids score
         vsids_score.resize(nb_vars + 1);
-        for (const auto& clause: clauses) {
-            for (auto signed_var: clause) {
-                vsids_score[abs(signed_var)]++;
+        for (auto pclause: clauses) {
+            for (auto lit: pclause->literals) {
+                vsids_score[lit.var()]++;
             }
         }
     }
@@ -104,31 +105,18 @@ void solver::init(bool restart) {
     // init var to decision level
     var_to_decision_level.resize(nb_vars + 1);
 
-    // debug: init clause filter
-    debug(for (const auto& clause: clauses) {
-        clause_filter.insert(clause);
-    })
-
     // build 2-watch-literals structures
-    pos_var_to_watch_clauses.resize(nb_vars + 1);
-    neg_var_to_watch_clauses.resize(nb_vars + 1);
-    watch_vars.resize(clauses.size());
+    var_to_watch_clauses[0].resize(nb_vars + 1);
+    var_to_watch_clauses[1].resize(nb_vars + 1);
     for (auto i = 0; i < clauses.size(); i++) {
-        debug(if (clauses[i].size() <= 1)
-            debug_logic_error("Size of initial clause is too small: " << clauses[i].size()))
-        auto x = clauses[i][0];
-        auto y = clauses[i][1];
-        watch_vars[i] = std::make_pair(x, y);
-        if (x > 0) {
-            pos_var_to_watch_clauses[x].push_back(i);
-        } else {
-            neg_var_to_watch_clauses[-x].push_back(i);
-        }
-        if (y > 0) {
-            pos_var_to_watch_clauses[y].push_back(i);
-        } else {
-            neg_var_to_watch_clauses[-y].push_back(i);
-        }
+        debug(if (clauses[i]->size() <= 1)
+            debug_logic_error("Size of initial clause is too small: " << clauses[i]->size()))
+
+        auto x = clauses[i]->literals[0];
+        auto y = clauses[i]->literals[1];
+        watch_vars.emplace_back(x, y);
+        var_to_watch_clauses[x.sign()][x.var()].push_back(i);
+        var_to_watch_clauses[y.sign()][y.var()].push_back(i);
     }
 
     probe_literals();
@@ -172,11 +160,11 @@ void solver::probe_literals() {
                 propagate_all();
                 if (unsat) {
                     auto conflict_clause = find_1uip_conflict_clause();
-                    auto best_var = 0;
-                    for (auto signed_var: conflict_clause) {
-                        if (var_to_decision_level[abs(signed_var)] == 1) {
-                            if (best_var == 0) {
-                                best_var = signed_var;
+                    auto best_lit = literal::undef;
+                    for (auto lit: conflict_clause) {
+                        if (var_to_decision_level[lit.var()] == 1) {
+                            if (best_lit == literal::undef) {
+                                best_lit = lit;
                             } else {
                                 debug(debug_logic_error("More than 1 var from current decision level => not a UIP clause"))
                             }
@@ -184,8 +172,8 @@ void solver::probe_literals() {
                     }
                     changed |= true;
                     backtrack();
-                    set_prior_value(best_var);
-                    set_signed_value(best_var, -1);
+                    set_prior_value(best_lit);
+                    set_literal_value(best_lit, -1);
                     propagate_all(true);
                     if (unsat)
                         goto end;
@@ -261,13 +249,13 @@ std::pair<sat_result, std::vector<int8_t>> solver::solve() {
         decisions++;
 
         propagate_all();
-        if (clauses.size() - initial_clauses_count > current_clause_limit) {
+        if (clauses.size() > current_clause_limit) {
             init(true);
             if (unsat) {
                 return report_result(false);
             }
             apply_prior_values();
-            info("Restart, new clause limit: " << current_clause_limit << ", learnt clause count: " << (clauses.size() - initial_clauses_count))
+            info("Restart, new clause limit: " << current_clause_limit << ", clause count: " << clauses.size())
             debug(if (unsat)
                 debug_logic_error("UNSAT just after restart: should be detected earlier"))
         }
@@ -279,12 +267,12 @@ std::pair<sat_result, std::vector<int8_t>> solver::solve() {
     return report_result(true);
 }
 
-std::vector<int> solver::find_1uip_conflict_clause() {
+std::vector<literal> solver::find_1uip_conflict_clause() {
     static std::vector<int8_t> var_count;
 
     conflicts++;
-    if (conflict_clause >= initial_clauses_count)
-        learnt_clause_stat[conflict_clause - initial_clauses_count].used++;
+    if (pconflict_clause->is_learnt())
+        pconflict_clause->stat.used++;
     if (conflicts % vsids_decay_iteration == 0) {
         for (auto var = 1; var <= nb_vars; var++) {
             vsids_score[var] *= vsids_decay_factor;
@@ -293,53 +281,50 @@ std::vector<int> solver::find_1uip_conflict_clause() {
 
     var_count.resize(nb_vars + 1);
     std::fill(var_count.begin(), var_count.end(), 0);
-    auto new_clause = clauses[conflict_clause];
     auto level_count = 0;
-    for (auto signed_var: new_clause) {
-        auto level = var_to_decision_level[abs(signed_var)];
+    for (auto lit: pconflict_clause->literals) {
+        auto level = var_to_decision_level[lit.var()];
         if (level == current_decision_level())
             level_count++;
-        var_count[abs(signed_var)]++;
+        var_count[lit.var()]++;
     }
 
-    auto compare = [this](int left_signed_var, int right_signed_var) {
-        auto left_var = abs(left_signed_var);
-        auto right_var = abs(right_signed_var);
-        return var_implied_depth[left_var] < var_implied_depth[right_var];
+    auto compare = [this](auto left_lit, auto right_lit) {
+        return var_implied_depth[left_lit.var()] < var_implied_depth[right_lit.var()];
     };
-    std::priority_queue<int, std::vector<int>, decltype(compare)> new_clause_queue(compare);
-    for (int signed_var: new_clause) {
-        new_clause_queue.push(signed_var);
+    std::priority_queue<literal, std::vector<literal>, decltype(compare)> new_clause_queue(compare);
+    for (auto lit: pconflict_clause->literals) {
+        new_clause_queue.push(lit);
     }
-    new_clause.clear();
+    std::vector<literal> new_literals;
 
     if (level_count > 1) {
         while (!new_clause_queue.empty()) {
-            auto signed_var = new_clause_queue.top();
-            auto var = abs(signed_var);
+            auto lit = new_clause_queue.top();
             new_clause_queue.pop();
-            auto level = var_to_decision_level[var];
+            auto level = var_to_decision_level[lit.var()];
             if (level != current_decision_level()) {
-                new_clause.push_back(signed_var);
+                new_literals.push_back(lit);
                 continue;
             }
 
-            auto clause_id = antecedent_clauses[var];
-            if (clause_id >= initial_clauses_count)
-                learnt_clause_stat[clause_id - initial_clauses_count].used++;
+            auto clause_id = antecedent_clauses[lit.var()];
+            if (clauses[clause_id]->is_learnt())
+                clauses[clause_id]->stat.used++;
+
             debug(if (clause_id == -1)
                 debug_logic_error("1-UIP algorithm reached decision variable from current level"))
 
             level_count--;
-            for (auto other_signed_var: clauses[clause_id]) {
-                if (abs(other_signed_var) == var || var_count[abs(other_signed_var)] > 0)
+            for (auto other_lit: clauses[clause_id]->literals) {
+                if (other_lit.var() == lit.var() || var_count[other_lit.var()] > 0)
                     continue;
 
-                auto other_level = var_to_decision_level[abs(other_signed_var)];
-                new_clause_queue.push(other_signed_var);
+                auto other_level = var_to_decision_level[other_lit.var()];
+                new_clause_queue.push(other_lit);
                 if (other_level == current_decision_level())
                     level_count++;
-                var_count[abs(other_signed_var)]++;
+                var_count[other_lit.var()]++;
             }
 
             // Stop at first UIP
@@ -347,20 +332,20 @@ std::vector<int> solver::find_1uip_conflict_clause() {
                 break;
         }
         while (!new_clause_queue.empty()) {
-            new_clause.push_back(new_clause_queue.top());
+            new_literals.push_back(new_clause_queue.top());
             new_clause_queue.pop();
         }
     }
-    new_clause.erase(
+    new_literals.erase(
             std::remove_if(
-                    new_clause.begin(),
-                    new_clause.end(),
-                    [this](int signed_var) { return prior_values[abs(signed_var)] != UNDEF; }
+                    new_literals.begin(),
+                    new_literals.end(),
+                    [this](auto lit) { return prior_values[lit.var()] != UNDEF; }
             ),
-            new_clause.end()
+            new_literals.end()
     );
 
-    return new_clause;
+    return new_literals;
 }
 
 int solver::analyse_conflict() {
@@ -372,8 +357,8 @@ int solver::analyse_conflict() {
     }
 
     auto max = -1;
-    for (auto signed_var: new_clause) {
-        auto level = var_to_decision_level[abs(signed_var)];
+    for (auto lit: new_clause) {
+        auto level = var_to_decision_level[lit.var()];
         if (level == current_decision_level())
             continue;
 
@@ -385,12 +370,12 @@ int solver::analyse_conflict() {
         debug_logic_error("All vars from current decision level and size of clause is not 1 => not a UIP clause"))
 
     auto next_level = max == 0 ? 1 : max;
-    add_clause(new_clause, next_level);
 
-    for (auto signed_var: new_clause) {
-        vsids_score[abs(signed_var)]++;
+    for (auto lit: new_clause) {
+        vsids_score[lit.var()]++;
     }
 
+    add_clause(std::move(new_clause), next_level);
     return next_level;
 }
 
@@ -468,7 +453,7 @@ std::pair<int, bool> solver::backtrack() {
     auto snapshot = snapshots.back();
     snapshots.pop_back();
     unsat = false;
-    conflict_clause = -1;
+    pconflict_clause = nullptr;
 
     auto old_value = values[snapshot.next_var] == TRUE;
 
@@ -501,41 +486,39 @@ void solver::propagate_all(bool prior) {
 
 void solver::propagate_var(int var, bool prior) {
     auto ever_found = false;
-    auto signed_self = values[var] == FALSE ? var : -var;
-    auto& watch_clauses = signed_self > 0
-            ? pos_var_to_watch_clauses[var]
-            : neg_var_to_watch_clauses[var];
+    auto self_lit = literal(values[var] == FALSE ? var : -var);
+    auto& watch_clauses = var_to_watch_clauses[self_lit.sign()][var];
 
     for (auto clause_id: watch_clauses) {
-        auto signed_other = watch_vars[clause_id].first == signed_self
+        auto other_lit = watch_vars[clause_id].first == self_lit
                 ? watch_vars[clause_id].second
                 : watch_vars[clause_id].first;
 
         auto found = false;
-        for (auto signed_candidate_var: clauses[clause_id]) {
-            if (signed_candidate_var == signed_other ||
-                signed_candidate_var == signed_self ||
-                get_signed_value(signed_candidate_var) == FALSE)
+        for (auto candidate_lit: clauses[clause_id]->literals) {
+            if (candidate_lit == other_lit ||
+                candidate_lit == self_lit ||
+                get_literal_value(candidate_lit) == FALSE)
                 continue;
 
             found = true;
-            replace_watch_var(watch_clauses, clause_id, signed_other, signed_candidate_var);
+            replace_watch_var(watch_clauses, clause_id, other_lit, candidate_lit);
             break;
         }
         ever_found |= found;
         if (!found) {
-            if (get_signed_value(signed_other) == FALSE) {
+            if (get_literal_value(other_lit) == FALSE) {
                 unsat = true;
-                conflict_clause = clause_id;
+                pconflict_clause = clauses[clause_id];
                 watch_clauses.erase(
                         std::remove(watch_clauses.begin(), watch_clauses.end(), -1),
                         watch_clauses.end()
                 );
                 return;
             }
-            set_signed_value(signed_other, clause_id);
+            set_literal_value(other_lit, clause_id);
             if (prior) {
-                set_prior_value(signed_other);
+                set_prior_value(other_lit);
             }
         }
     }
@@ -547,18 +530,14 @@ void solver::propagate_var(int var, bool prior) {
     }
 }
 
-void solver::replace_watch_var(std::vector<int>& from_watch_clauses, int clause_id, int signed_other_var, int signed_to_var) {
+void solver::replace_watch_var(std::vector<int>& from_watch_clauses, int clause_id, literal other_lit, literal to_lit) {
     auto position = std::find(from_watch_clauses.begin(), from_watch_clauses.end(), clause_id);
     debug(if (position == from_watch_clauses.end())
         debug_logic_error("from_var was not a watch literal for clause_id: " << clause_id))
 
     *position = -1;
-    watch_vars[clause_id] = std::make_pair(signed_other_var, signed_to_var);
-    if (signed_to_var > 0) {
-        pos_var_to_watch_clauses[signed_to_var].push_back(clause_id);
-    } else {
-        neg_var_to_watch_clauses[-signed_to_var].push_back(clause_id);
-    }
+    watch_vars[clause_id] = std::make_pair(other_lit, to_lit);
+    var_to_watch_clauses[to_lit.sign()][to_lit.var()].push_back(clause_id);
 }
 
 void solver::apply_prior_values() {
@@ -574,17 +553,17 @@ bool solver::set_value(int var, bool value, int reason_clause) {
         return false;
 
     if (values[var] == UNDEF) {
-        values[var] = value ? TRUE : FALSE;
+        values[var] = (value_state) value;
         values_count++;
         values_stack.push_back(var);
         antecedent_clauses[var] = reason_clause;
         auto implied_depth = 0;
         if (reason_clause != -1) {
-            for (int signed_var: clauses[reason_clause]) {
-                if (var_to_decision_level[abs(signed_var)] != current_decision_level())
+            for (auto lit: clauses[reason_clause]->literals) {
+                if (var_to_decision_level[lit.var()] != current_decision_level())
                     continue;
 
-                implied_depth = std::max(implied_depth, var_implied_depth[abs(signed_var)] + 1);
+                implied_depth = std::max(implied_depth, var_implied_depth[lit.var()] + 1);
             }
         }
         var_implied_depth[var] = implied_depth;
@@ -598,7 +577,7 @@ bool solver::set_value(int var, bool value, int reason_clause) {
 }
 
 void solver::unset_value(int var) {
-    debug(if (get_signed_value(var) == UNDEF)
+    debug(if (values[var] == UNDEF)
         debug_logic_error("Trying to unset already undefined var: " << var))
 
     values[var] = UNDEF;
@@ -607,83 +586,64 @@ void solver::unset_value(int var) {
     values_count--;
 }
 
-void solver::set_prior_value(int signed_var) {
-    if (prior_values[abs(signed_var)] == UNDEF)
+void solver::set_prior_value(literal lit) {
+    if (prior_values[lit.var()] == UNDEF)
         priors++;
 
-    prior_values[abs(signed_var)] = signed_var > 0 ? TRUE : FALSE;
+    prior_values[lit.var()] = (value_state) lit.sign();
 }
 
-bool solver::set_signed_value(int signed_var, int reason_clause) {
-    return set_value(abs(signed_var), signed_var > 0, reason_clause);
+bool solver::set_literal_value(literal lit, int reason_clause) {
+    return set_value(lit.var(), lit.sign(), reason_clause);
 }
 
-value_state solver::get_signed_value(int signed_var) {
-    auto var = abs(signed_var);
-    auto value = values[var];
+value_state solver::get_literal_value(literal lit) {
+    auto value = values[lit.var()];
     if (value == UNDEF)
         return UNDEF;
 
-    if ((value == TRUE) ^ (signed_var < 0))
-        return TRUE;
-    else
-        return FALSE;
+    return (value_state) (value ^ !lit.sign());
 }
 
-bool solver::add_clause(const std::vector<int>& clause, int next_decision_level) {
-    debug(
-        auto duplicate = clause_filter.find(clause) != clause_filter.end();
-        if (duplicate) {
-            debug_logic_error("Tried to add already existed clause")
-        }
-        clause_filter.insert(clause);
-    )
-    trace("New clause: " << trace_print_vector(clause))
+bool solver::add_clause(std::vector<literal>&& literals, int next_decision_level) {
+    trace("New clause: " << debug_print_literals(clause))
+
+    debug(if (literals.size() <= 1)
+              debug_logic_error("Size of new clause is too small: " << literals.size()))
 
     static std::unordered_set<int> levels;
     levels.clear();
-    for (auto signed_var: clause) {
-        auto level = var_to_decision_level[abs(signed_var)];
+    for (auto lit: literals) {
+        auto level = var_to_decision_level[lit.var()];
         if (level == 0)
             continue;
 
         levels.insert(level);
     }
 
-    clauses.push_back(clause);
-    learnt_clause_stat.emplace_back(levels.size(), 0);
-    auto clause_id = (int) (clauses.size() - 1);
-
-    debug(if (clause.size() <= 1)
-        debug_logic_error("Size of new clause is too small: " << clause.size()))
-
-    auto watch1 = 0, watch2 = 0;
-    for (auto signed_var: clause) {
-        if (get_signed_value(signed_var) == UNDEF ||
-            var_to_decision_level[abs(signed_var)] >= next_decision_level ||
-            (var_to_decision_level[abs(signed_var)] == 0 && next_decision_level == 1)) {
-            if (watch1 == 0) {
-                watch1 = signed_var;
+    auto watch1 = literal::undef, watch2 = literal::undef;
+    for (auto lit: literals) {
+        if (get_literal_value(lit) == UNDEF ||
+            var_to_decision_level[lit.var()] >= next_decision_level ||
+            (var_to_decision_level[lit.var()] == 0 && next_decision_level == 1)) {
+            if (watch1 == literal::undef) {
+                watch1 = lit;
             } else {
-                watch2 = signed_var;
+                watch2 = lit;
                 break;
             }
         }
     }
-    debug(if (watch1 == 0 || watch2 == 0)
-        debug_logic_error("Could not find potentially UNDEF watch variables for new clause, watch1 = " << watch1 << ", watch2 = " << watch2))
+
+    debug(if (watch1 == literal::undef || watch2 == literal::undef)
+              debug_logic_error("Could not find potentially UNDEF watch variables for new clause, watch1 = " << watch1.var() << ", watch2 = " << watch2.var()))
+
+    clauses.push_back(clause_allocator::allocate_clause(std::move(literals), clause_stat {(uint32_t) levels.size(), 0}));
+    auto clause_id = (int) (clauses.size() - 1);
 
     watch_vars.emplace_back(watch1, watch2);
-    if (watch1 > 0) {
-        pos_var_to_watch_clauses[watch1].push_back(clause_id);
-    } else {
-        neg_var_to_watch_clauses[-watch1].push_back(clause_id);
-    }
-    if (watch2 > 0) {
-        pos_var_to_watch_clauses[watch2].push_back(clause_id);
-    } else {
-        neg_var_to_watch_clauses[-watch2].push_back(clause_id);
-    }
+    var_to_watch_clauses[watch1.sign()][watch1.var()].push_back(clause_id);
+    var_to_watch_clauses[watch2.sign()][watch2.var()].push_back(clause_id);
     return true;
 }
 
@@ -736,17 +696,19 @@ bool solver::timer_log() {
 
 bool solver::verify_result() {
     auto result = true;
-    for (auto clause_id = 0; clause_id < initial_clauses_count; clause_id++) {
-        const auto& clause = clauses[clause_id];
+    for (auto pclause: clauses) {
+        if (pclause->is_learnt())
+            continue;
+
         auto all_false = true;
-        for (auto signed_var: clause) {
-            if (get_signed_value(signed_var) != FALSE) {
+        for (auto lit: pclause->literals) {
+            if (get_literal_value(lit) != FALSE) {
                 all_false = false;
                 break;
             }
         }
         if (all_false) {
-            info(trace_print_vector(clause) << " => false")
+            info(debug_print_literals(pclause->literals) << " => false")
             result = false;
         }
     }
@@ -788,12 +750,6 @@ void solver::print_statistics(std::chrono::milliseconds elapsed) {
     std::cout << "Deduced values: \t" << priors
               << " (of total " << nb_vars << ")" << std::endl;
     std::cout << "Clause count: \t\t" << clauses.size()
-              << " (learned clauses: " << (clauses.size() - initial_clauses_count)
-              << " with limit " << current_clause_limit << ")" << std::endl;
+              << " with limit " << current_clause_limit << std::endl;
     std::cout << std::endl;
-}
-
-bool solver::maybe_clause_disabled(int clause_id) {
-    auto watch_pair = watch_vars[clause_id];
-    return get_signed_value(watch_pair.first) == TRUE || get_signed_value(watch_pair.second) == TRUE;
 }

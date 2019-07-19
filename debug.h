@@ -26,11 +26,11 @@
     throw std::logic_error(ss.str());\
 }
 
-template<typename T>
-std::string trace_print_vector(const std::vector<T> vec, const std::string& separator = " ") {
+template <typename LiteralType>
+std::string debug_print_literals(const std::vector<LiteralType> vec, const std::string &separator = " ") {
     std::stringstream ss;
     for (auto i = 0; i < vec.size(); i++) {
-        ss << vec[i];
+        ss << (vec[i].sign() ? "" : "-") << vec[i].var();
         if (i < vec.size() - 1)
             ss << separator;
     }

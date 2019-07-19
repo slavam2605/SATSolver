@@ -1,6 +1,7 @@
 #include "dimacs.h"
 #include "debug.h"
 #include "sat_utils.h"
+#include "clause_allocator.h"
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -27,25 +28,25 @@ dimacs dimacs::read(const std::string& path) {
             ss >> result.nb_vars >> clause_number;
             result.clauses.reserve(clause_number);
         } else {
-            auto last_index = result.clauses.size();
-            result.clauses.resize(last_index + 1);
+            std::vector<literal> new_clause;
             int __tmp;
             while (ss >> __tmp) {
                 if (__tmp == 0)
                     break;
 
-                result.clauses[last_index].push_back(__tmp);
+                new_clause.emplace_back(__tmp);
             }
 
             std::sort(
-                    result.clauses[last_index].begin(),
-                    result.clauses[last_index].end(),
-                    [](int i, int j) { return abs(i) < abs(j); }
+                    new_clause.begin(),
+                    new_clause.end(),
+                    [](literal x, literal y) { return x.var() < y.var(); }
             );
-            auto last = std::unique(result.clauses[last_index].begin(), result.clauses[last_index].end());
-            result.clauses[last_index].erase(last, result.clauses[last_index].end());
-            if (sat_utils::is_tautology(result.clauses[last_index]))
-                result.clauses.resize(result.clauses.size() - 1);
+            auto last = std::unique(new_clause.begin(), new_clause.end());
+            new_clause.erase(last, new_clause.end());
+            if (!sat_utils::is_tautology(new_clause)) {
+                result.clauses.push_back(clause_allocator::allocate_clause(std::move(new_clause)));
+            }
         }
     }
     info("Dimacs was read in " << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count() << " ms")
