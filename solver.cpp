@@ -12,6 +12,7 @@
 
 solver::solver(const dimacs &formula, std::chrono::seconds timeout)
         : nb_vars(formula.nb_vars),
+          vsids(*this),
           priors(0),
           decisions(0),
           propagations(0),
@@ -76,17 +77,14 @@ void solver::init(bool restart) {
         }
 
         current_clause_limit = (size_t) (current_clause_limit * clause_limit_inc_factor);
+
+        vsids.rebuild();
     } else {
         current_clause_limit = (size_t) (clauses.size() * clause_limit_init_factor);
         log_iteration = 0;
 
         // init vsids score
-        vsids_score.resize(nb_vars + 1);
-        for (const auto& clause: clauses) {
-            for (auto signed_var: clause) {
-                vsids_score[abs(signed_var)]++;
-            }
-        }
+        vsids.init();
     }
 
     // init values
@@ -205,10 +203,12 @@ void solver::probe_literals() {
 }
 
 void solver::clear_state() {
+    // TODO this method may break some invariants
     values_count = 0;
     std::fill(values.begin(), values.end(), UNDEF);
     std::fill(antecedent_clauses.begin(), antecedent_clauses.end(), -1);
     values_stack.clear();
+    vsids.rebuild();
 }
 
 sat_result solver::current_result() {
@@ -232,6 +232,7 @@ std::pair<sat_result, std::vector<int8_t>> solver::solve() {
 
     // TODO: sort clauses with usage count along with LBD and size
     // TODO: clause deletion while solving (before restart)
+    // TODO: get rid of implied_depth and traverse in order of trail
     while (unsat || values_count < nb_vars) {
         int next_var;
         bool value;
@@ -285,11 +286,7 @@ std::vector<int> solver::find_1uip_conflict_clause() {
     conflicts++;
     if (conflict_clause >= initial_clauses_count)
         learnt_clause_stat[conflict_clause - initial_clauses_count].used++;
-    if (conflicts % vsids_decay_iteration == 0) {
-        for (auto var = 1; var <= nb_vars; var++) {
-            vsids_score[var] *= vsids_decay_factor;
-        }
-    }
+    vsids.on_conflict();
 
     var_count.resize(nb_vars + 1);
     std::fill(var_count.begin(), var_count.end(), 0);
@@ -320,7 +317,8 @@ std::vector<int> solver::find_1uip_conflict_clause() {
             new_clause_queue.pop();
             auto level = var_to_decision_level[var];
             if (level != current_decision_level()) {
-                new_clause.push_back(signed_var);
+                if (prior_values[abs(signed_var)] == UNDEF)
+                    new_clause.push_back(signed_var);
                 continue;
             }
 
@@ -347,18 +345,11 @@ std::vector<int> solver::find_1uip_conflict_clause() {
                 break;
         }
         while (!new_clause_queue.empty()) {
-            new_clause.push_back(new_clause_queue.top());
+            if (prior_values[abs(new_clause_queue.top())] == UNDEF)
+                new_clause.push_back(new_clause_queue.top());
             new_clause_queue.pop();
         }
     }
-    new_clause.erase(
-            std::remove_if(
-                    new_clause.begin(),
-                    new_clause.end(),
-                    [this](int signed_var) { return prior_values[abs(signed_var)] != UNDEF; }
-            ),
-            new_clause.end()
-    );
 
     return new_clause;
 }
@@ -388,7 +379,7 @@ int solver::analyse_conflict() {
     add_clause(new_clause, next_level);
 
     for (auto signed_var: new_clause) {
-        vsids_score[abs(signed_var)]++;
+        vsids.bump_variable(abs(signed_var));
     }
 
     return next_level;
@@ -418,26 +409,11 @@ int solver::pick_var() {
         var = pick_var_random();
     } else {
         trace("Pick var using VSIDS")
-        var = pick_var_vsids();
+        var = vsids.pick();
     }
 
     trace("Pick variable: " << var)
     return var;
-}
-
-int solver::pick_var_vsids() {
-    double max = -1;
-    auto max_var = 0;
-    for (auto var = 1; var <= nb_vars; var++) {
-        if (values[var] == UNDEF && vsids_score[var] > max) {
-            max = vsids_score[var];
-            max_var = var;
-        }
-    }
-    debug(if (max_var == 0)
-        debug_logic_error("Can't pick new variable"))
-
-    return max_var;
 }
 
 int solver::pick_var_random() {
@@ -605,6 +581,7 @@ void solver::unset_value(int var) {
     antecedent_clauses[var] = -1;
     var_implied_depth[var] = 0;
     values_count--;
+    vsids.on_var_unset(var);
 }
 
 void solver::set_prior_value(int signed_var) {
@@ -791,9 +768,4 @@ void solver::print_statistics(std::chrono::milliseconds elapsed) {
               << " (learned clauses: " << (clauses.size() - initial_clauses_count)
               << " with limit " << current_clause_limit << ")" << std::endl;
     std::cout << std::endl;
-}
-
-bool solver::maybe_clause_disabled(int clause_id) {
-    auto watch_pair = watch_vars[clause_id];
-    return get_signed_value(watch_pair.first) == TRUE || get_signed_value(watch_pair.second) == TRUE;
 }

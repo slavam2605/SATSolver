@@ -3,6 +3,8 @@
 
 #include "dimacs.h"
 #include "debug.h"
+#include "solver_types.h"
+#include "vsids_picker.h"
 #include <vector>
 #include <chrono>
 #include <queue>
@@ -20,12 +22,6 @@ enum sat_result {
     UNSAT = false,
     SAT = true,
     UNKNOWN = 2
-};
-
-enum value_state {
-    FALSE = false,
-    TRUE = true,
-    UNDEF = 2
 };
 
 enum class polarity_mode {
@@ -75,7 +71,7 @@ class solver {
     std::vector<std::vector<int>> neg_var_to_watch_clauses;
     std::vector<std::pair<int, int>> watch_vars;
     std::vector<value_state> prior_values;
-    std::vector<double> vsids_score;
+    vsids_picker<solver> vsids;
     std::vector<clause_stat> learnt_clause_stat;
     debug_def(std::unordered_set<std::vector<int>> clause_filter;)
     size_t initial_clauses_count;
@@ -110,9 +106,7 @@ class solver {
     int64_t priors;
 
     // constants
-    static constexpr int64_t vsids_decay_iteration = 256;
-    static constexpr double vsids_decay_factor = 0.5;
-    static constexpr double random_pick_var_prob = 0.02;
+    static constexpr double random_pick_var_prob = 0.01;
     static constexpr double clause_limit_init_factor = 1.0 / 3.0;
     static constexpr double clause_limit_inc_factor = 1.1;
     static constexpr double clause_keep_ratio = 0.5;
@@ -129,7 +123,6 @@ private:
     void init(bool restart);
 
     int pick_var();
-    int pick_var_vsids();
     int pick_var_random();
 
     bool pick_polarity();
@@ -150,7 +143,6 @@ private:
     bool add_clause(const std::vector<int>& clause, int next_decision_level);
 
     void apply_prior_values();
-    bool maybe_clause_disabled(int clause_id);
     bool set_signed_value(int signed_var, int reason_clause);
     value_state get_signed_value(int signed_var);
     void replace_watch_var(std::vector<int>& from_watch_clauses, int clause_id, int signed_other_var, int signed_to_var);
@@ -164,6 +156,8 @@ private:
     bool verify_result();
     void print_statistics(std::chrono::milliseconds elapsed);
     void print_format_seconds(double duration);
+
+    friend class vsids_picker<solver>;
 };
 
 #endif //SATSOLVER_SOLVER_H
