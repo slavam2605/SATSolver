@@ -44,6 +44,12 @@ struct clause {
     uint32_t size() const;
 };
 
+enum value_state {
+    FALSE = false,
+    TRUE = true,
+    UNDEF = 2
+};
+
 // ======================= Implementation =======================
 
 inline literal::literal(int signed_var) {

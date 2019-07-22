@@ -4,6 +4,7 @@
 #include "dimacs.h"
 #include "debug.h"
 #include "solver_types.h"
+#include "vsids_picker.h"
 #include <vector>
 #include <chrono>
 #include <queue>
@@ -23,12 +24,6 @@ enum sat_result {
     UNKNOWN = 2
 };
 
-enum value_state {
-    FALSE = false,
-    TRUE = true,
-    UNDEF = 2
-};
-
 enum class polarity_mode {
     TRUE, FALSE, RANDOM
 };
@@ -41,7 +36,7 @@ class solver {
     std::vector<std::vector<int>> var_to_watch_clauses[2];
     std::vector<std::pair<literal, literal>> watch_vars;
     std::vector<value_state> prior_values;
-    std::vector<double> vsids_score;
+    vsids_picker<solver> vsids;
     size_t current_clause_limit;
     std::chrono::seconds timeout;
 
@@ -73,8 +68,6 @@ class solver {
     int64_t priors;
 
     // constants
-    static constexpr int64_t vsids_decay_iteration = 256;
-    static constexpr double vsids_decay_factor = 0.5;
     static constexpr double random_pick_var_prob = 0.02;
     static constexpr double clause_limit_init_factor = 1.0 / 3.0;
     static constexpr double clause_limit_inc_factor = 1.1;
@@ -92,7 +85,6 @@ private:
     void init(bool restart);
 
     int pick_var();
-    int pick_var_vsids();
     int pick_var_random();
 
     bool pick_polarity();
@@ -113,7 +105,6 @@ private:
     bool add_clause(std::vector<literal>&& literals, int next_decision_level);
 
     void apply_prior_values();
-    bool maybe_clause_disabled(int clause_id);
     bool set_literal_value(literal lit, int reason_clause);
     value_state get_literal_value(literal lit);
     void replace_watch_var(std::vector<int>& from_watch_clauses, int clause_id, literal other_lit, literal to_lit);
@@ -127,6 +118,8 @@ private:
     bool verify_result();
     void print_statistics(std::chrono::milliseconds elapsed);
     void print_format_seconds(double duration);
+
+    friend class vsids_picker<solver>;
 };
 
 #endif //SATSOLVER_SOLVER_H
