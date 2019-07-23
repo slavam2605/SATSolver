@@ -127,11 +127,11 @@ private:
 
     bool pick_polarity();
     void take_snapshot(int next_var);
-    std::pair<int, bool> backtrack();
+    void backtrack();
+    void backtrack_until(int decision_level);
     int current_decision_level();
     std::vector<int> find_1uip_conflict_clause();
-    int analyse_conflict();
-    void clear_state();
+    int analyse_conflict(int& deduced_signed_var);
     void probe_literals();
 
     void propagate_all(bool prior = false);

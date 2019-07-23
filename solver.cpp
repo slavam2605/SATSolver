@@ -36,23 +36,16 @@ solver::solver(const dimacs &formula, std::chrono::seconds timeout)
 }
 
 void solver::init(bool restart) {
-    unsat = false;
-    conflict_clause = -1;
-    values_count = 0;
     debug(if (!propagation_queue.empty())
         debug_logic_error("Propagation queue is not empty on restart"))
 
     if (restart) {
-        values.clear();
-        antecedent_clauses.clear();
-        var_implied_depth.clear();
-        var_to_decision_level.clear();
+        backtrack_until(0);
+
         debug(clause_filter.clear();)
         pos_var_to_watch_clauses.clear();
         neg_var_to_watch_clauses.clear();
         watch_vars.clear();
-        values_stack.clear();
-        snapshots.clear();
 
         std::vector<std::pair<std::vector<int>, clause_stat>> learnt_clauses;
         for (auto i = 0; i < clauses.size() - initial_clauses_count; i++) {
@@ -77,30 +70,32 @@ void solver::init(bool restart) {
         }
 
         current_clause_limit = (size_t) (current_clause_limit * clause_limit_inc_factor);
-
-        vsids.rebuild();
     } else {
+        unsat = false;
+        conflict_clause = -1;
+        values_count = 0;
+
         current_clause_limit = (size_t) (clauses.size() * clause_limit_init_factor);
         log_iteration = 0;
 
         // init vsids score
         vsids.init();
+
+        // init values
+        values.resize(nb_vars + 1);
+        std::fill(values.begin(), values.end(), UNDEF);
+
+        // init antecedent clauses
+        antecedent_clauses.resize(nb_vars + 1);
+        std::fill(antecedent_clauses.begin(), antecedent_clauses.end(), -1);
+
+        // init implied depth of variables
+        var_implied_depth.resize(nb_vars + 1);
+        std::fill(var_implied_depth.begin(), var_implied_depth.end(), 0);
+
+        // init var to decision level
+        var_to_decision_level.resize(nb_vars + 1);
     }
-
-    // init values
-    values.resize(nb_vars + 1);
-    std::fill(values.begin(), values.end(), UNDEF);
-
-    // init antecedent clauses
-    antecedent_clauses.resize(nb_vars + 1);
-    std::fill(antecedent_clauses.begin(), antecedent_clauses.end(), -1);
-
-    // init implied depth of variables
-    var_implied_depth.resize(nb_vars + 1);
-    std::fill(var_implied_depth.begin(), var_implied_depth.end(), 0);
-
-    // init var to decision level
-    var_to_decision_level.resize(nb_vars + 1);
 
     // debug: init clause filter
     debug(for (const auto& clause: clauses) {
@@ -129,6 +124,8 @@ void solver::init(bool restart) {
         }
     }
 
+    take_snapshot(0);
+    apply_prior_values();
     probe_literals();
 }
 
@@ -143,8 +140,7 @@ void solver::probe_literals() {
 
     auto start = std::chrono::steady_clock::now();
 
-    apply_prior_values();
-
+    auto old_priors = priors;
     auto var_count = 0;
     auto changed = true;
     while (changed) {
@@ -199,16 +195,7 @@ void solver::probe_literals() {
     }
 
     auto duration = std::chrono::steady_clock::now() - start;
-    info("Failed literals probing: " << std::chrono::duration_cast<std::chrono::milliseconds>(duration).count() << " ms, tried: " << var_count)
-}
-
-void solver::clear_state() {
-    // TODO this method may break some invariants
-    values_count = 0;
-    std::fill(values.begin(), values.end(), UNDEF);
-    std::fill(antecedent_clauses.begin(), antecedent_clauses.end(), -1);
-    values_stack.clear();
-    vsids.rebuild();
+    info("Failed literals probing: " << std::chrono::duration_cast<std::chrono::milliseconds>(duration).count() << " ms, deduced: " << priors - old_priors)
 }
 
 sat_result solver::current_result() {
@@ -225,31 +212,30 @@ std::pair<sat_result, std::vector<int8_t>> solver::solve() {
     start_time = std::chrono::steady_clock::now();
     log_time = start_time;
 
-    apply_prior_values();
-    if (current_result() != UNKNOWN) {
-        return report_result(current_result());
-    }
-
     // TODO: sort clauses with usage count along with LBD and size
     // TODO: clause deletion while solving (before restart)
     // TODO: get rid of implied_depth and traverse in order of trail
+    // TODO: maybe bump variables not only in resulting clause but all that were on the way
     while (unsat || values_count < nb_vars) {
         int next_var;
         bool value;
         if (unsat) {
-            auto decision_level = analyse_conflict();
+            int deduced_signed_var;
+            auto decision_level = analyse_conflict(deduced_signed_var);
             trace("Level from analyse_conflict: " << decision_level << ", current: " << current_decision_level())
 
-            do {
-                backtrack();
-            } while (current_decision_level() >= decision_level);
+            if (decision_level == 0)
+                return report_result(false);
 
-            if (current_decision_level() == 0) {
-                clear_state();
-                apply_prior_values();
-                if (current_result() != UNKNOWN) {
-                    return report_result(current_result());
-                }
+            backtrack_until(decision_level);
+
+            if (deduced_signed_var != 0) {
+                set_signed_value(deduced_signed_var, -1);
+                propagate_all(true);
+            }
+
+            if (current_result() != UNKNOWN) {
+                return report_result(current_result());
             }
         }
 
@@ -257,6 +243,7 @@ std::pair<sat_result, std::vector<int8_t>> solver::solve() {
         value = pick_polarity();
         take_snapshot(next_var);
 
+        trace("Current decision level: " << current_decision_level())
         if (!set_value(next_var, value, -1))
             debug(debug_logic_error("Decision failed"))
         decisions++;
@@ -264,13 +251,7 @@ std::pair<sat_result, std::vector<int8_t>> solver::solve() {
         propagate_all();
         if (clauses.size() - initial_clauses_count > current_clause_limit) {
             init(true);
-            if (unsat) {
-                return report_result(false);
-            }
-            apply_prior_values();
             info("Restart, new clause limit: " << current_clause_limit << ", learnt clause count: " << (clauses.size() - initial_clauses_count))
-            debug(if (unsat)
-                debug_logic_error("UNSAT just after restart: should be detected earlier"))
         }
 
         if (!timer_log())
@@ -310,55 +291,55 @@ std::vector<int> solver::find_1uip_conflict_clause() {
     }
     new_clause.clear();
 
-    if (level_count > 1) {
-        while (!new_clause_queue.empty()) {
-            auto signed_var = new_clause_queue.top();
-            auto var = abs(signed_var);
-            new_clause_queue.pop();
-            auto level = var_to_decision_level[var];
-            if (level != current_decision_level()) {
-                if (prior_values[abs(signed_var)] == UNDEF)
-                    new_clause.push_back(signed_var);
+    while (level_count != 1 && !new_clause_queue.empty()) {
+        auto signed_var = new_clause_queue.top();
+        auto var = abs(signed_var);
+        new_clause_queue.pop();
+        auto level = var_to_decision_level[var];
+        if (level != current_decision_level()) {
+            if (prior_values[abs(signed_var)] == UNDEF)
+                new_clause.push_back(signed_var);
+            continue;
+        }
+
+        auto clause_id = antecedent_clauses[var];
+        if (clause_id >= initial_clauses_count)
+            learnt_clause_stat[clause_id - initial_clauses_count].used++;
+        debug(if (clause_id == -1)
+            debug_logic_error("1-UIP algorithm reached decision variable from current level"))
+
+        level_count--;
+        for (auto other_signed_var: clauses[clause_id]) {
+            if (abs(other_signed_var) == var || var_count[abs(other_signed_var)] > 0)
                 continue;
-            }
 
-            auto clause_id = antecedent_clauses[var];
-            if (clause_id >= initial_clauses_count)
-                learnt_clause_stat[clause_id - initial_clauses_count].used++;
-            debug(if (clause_id == -1)
-                debug_logic_error("1-UIP algorithm reached decision variable from current level"))
-
-            level_count--;
-            for (auto other_signed_var: clauses[clause_id]) {
-                if (abs(other_signed_var) == var || var_count[abs(other_signed_var)] > 0)
-                    continue;
-
-                auto other_level = var_to_decision_level[abs(other_signed_var)];
-                new_clause_queue.push(other_signed_var);
-                if (other_level == current_decision_level())
-                    level_count++;
-                var_count[abs(other_signed_var)]++;
-            }
-
-            // Stop at first UIP
-            if (level_count == 1)
-                break;
+            auto other_level = var_to_decision_level[abs(other_signed_var)];
+            new_clause_queue.push(other_signed_var);
+            if (other_level == current_decision_level())
+                level_count++;
+            var_count[abs(other_signed_var)]++;
         }
-        while (!new_clause_queue.empty()) {
-            if (prior_values[abs(new_clause_queue.top())] == UNDEF)
-                new_clause.push_back(new_clause_queue.top());
-            new_clause_queue.pop();
-        }
+    }
+    while (!new_clause_queue.empty()) {
+        if (prior_values[abs(new_clause_queue.top())] == UNDEF)
+            new_clause.push_back(new_clause_queue.top());
+        new_clause_queue.pop();
     }
 
     return new_clause;
 }
 
-int solver::analyse_conflict() {
+int solver::analyse_conflict(int& deduced_signed_var) {
     auto new_clause = find_1uip_conflict_clause();
+    deduced_signed_var = 0;
+
+    if (new_clause.empty()) {
+        return 0;
+    }
 
     if (new_clause.size() == 1) {
         set_prior_value(new_clause[0]);
+        deduced_signed_var = new_clause[0];
         return 1;
     }
 
@@ -375,7 +356,7 @@ int solver::analyse_conflict() {
     debug(if (max == -1)
         debug_logic_error("All vars from current decision level and size of clause is not 1 => not a UIP clause"))
 
-    auto next_level = max == 0 ? 1 : max;
+    auto next_level = max;
     add_clause(new_clause, next_level);
 
     for (auto signed_var: new_clause) {
@@ -437,27 +418,29 @@ void solver::take_snapshot(int next_var) {
     snapshots.push_back({next_var, values_stack.size()});
 }
 
-std::pair<int, bool> solver::backtrack() {
-    if (snapshots.empty())
-        return std::make_pair(0, false);
+void solver::backtrack() {
+    debug(if (snapshots.empty())
+        debug_logic_error("Tried to backtrack with empty stack"))
 
     auto snapshot = snapshots.back();
     snapshots.pop_back();
     unsat = false;
     conflict_clause = -1;
 
-    auto old_value = values[snapshot.next_var] == TRUE;
-
     for (auto i = snapshot.values_stack_length; i < values_stack.size(); i++) {
         unset_value(values_stack[i]);
     }
     values_stack.resize(snapshot.values_stack_length);
+}
 
-    return std::make_pair(snapshot.next_var, old_value);
+void solver::backtrack_until(int decision_level) {
+    do {
+        backtrack();
+    } while (current_decision_level() >= decision_level);
 }
 
 int solver::current_decision_level() {
-    return (int) snapshots.size();
+    return (int) snapshots.size() - 1;
 }
 
 void solver::propagate_all(bool prior) {

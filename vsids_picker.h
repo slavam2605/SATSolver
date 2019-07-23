@@ -50,10 +50,6 @@ public:
         vsids_queue.rebuild_heap(vars_vector);
     }
 
-    void rebuild() {
-        vsids_queue.rebuild_heap(vars_vector);
-    }
-
     void bump_variable(int var) {
         vsids_score[var] += current_bump_value;
         vsids_queue.decrease(var);
