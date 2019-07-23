@@ -215,7 +215,6 @@ std::pair<sat_result, std::vector<int8_t>> solver::solve() {
     // TODO: sort clauses with usage count along with LBD and size
     // TODO: clause deletion while solving (before restart)
     // TODO: get rid of implied_depth and traverse in order of trail
-    // TODO: maybe bump variables not only in resulting clause but all that were on the way
     while (unsat || values_count < nb_vars) {
         int next_var;
         bool value;
@@ -288,6 +287,7 @@ std::vector<int> solver::find_1uip_conflict_clause() {
     std::priority_queue<int, std::vector<int>, decltype(compare)> new_clause_queue(compare);
     for (int signed_var: new_clause) {
         new_clause_queue.push(signed_var);
+        vsids.bump_variable(abs(signed_var));
     }
     new_clause.clear();
 
@@ -315,6 +315,7 @@ std::vector<int> solver::find_1uip_conflict_clause() {
 
             auto other_level = var_to_decision_level[abs(other_signed_var)];
             new_clause_queue.push(other_signed_var);
+            vsids.bump_variable(abs(other_signed_var));
             if (other_level == current_decision_level())
                 level_count++;
             var_count[abs(other_signed_var)]++;
@@ -358,10 +359,6 @@ int solver::analyse_conflict(int& deduced_signed_var) {
 
     auto next_level = max;
     add_clause(new_clause, next_level);
-
-    for (auto signed_var: new_clause) {
-        vsids.bump_variable(abs(signed_var));
-    }
 
     return next_level;
 }
