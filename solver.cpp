@@ -166,20 +166,13 @@ void solver::probe_literals() {
                 propagate_all();
                 if (unsat) {
                     auto conflict_clause = find_1uip_conflict_clause();
-                    auto best_var = 0;
-                    for (auto signed_var: conflict_clause) {
-                        if (var_to_decision_level[abs(signed_var)] == 1) {
-                            if (best_var == 0) {
-                                best_var = signed_var;
-                            } else {
-                                debug(debug_logic_error("More than 1 var from current decision level => not a UIP clause"))
-                            }
-                        }
-                    }
+                    auto best_var = std::find_if(conflict_clause.begin(), conflict_clause.end(), [this](int signed_var) {
+                        return var_to_decision_level[abs(signed_var)] == 1;
+                    });
                     changed |= true;
                     backtrack();
-                    set_prior_value(best_var);
-                    set_signed_value(best_var, -1);
+                    set_prior_value(*best_var);
+                    set_signed_value(*best_var, -1);
                     propagate_all(true);
                     if (unsat)
                         goto end;
